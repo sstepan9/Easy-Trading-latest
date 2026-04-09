@@ -1,0 +1,28 @@
+name: EasyTrading
+version: '${version}'
+main: com.easytrading.paper.EasyTradingPlugin
+api-version: '1.21'
+description: A comprehensive economy and trading plugin for Minecraft servers
+authors:
+  - EasyTrading
+depend:
+  - Vault
+softdepend:
+  - Towny
+
+commands:
+  market:
+    description: Open the market or execute trading commands
+    usage: /market [sell|sellto|buyfrom|send|team|history|limits|hide|show|balance|help|bankreload|clearlimits|change|add|take] [args...]
+  checkbalance:
+    description: Check another player's balance (OP only)
+    usage: /checkbalance <player>
+    permission: easytrading.admin
+
+permissions:
+  easytrading.admin:
+    description: Allows admin commands (bankreload, clearlimits, change, add, take, checkbalance)
+    default: op
+  easytrading.use:
+    description: Allows basic market usage
+    default: true

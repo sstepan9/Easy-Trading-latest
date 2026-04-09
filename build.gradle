@@ -1,0 +1,40 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.easytrading'
+
+def mcVersion = project.findProperty('mc_version') ?: '1.21.11'
+def modVersion = project.findProperty('mod_version') ?: "${mcVersion}-0.9"
+version = modVersion
+
+base {
+    archivesName = 'EasyTrading-Paper'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    maven { url = 'https://jitpack.io' }
+}
+
+dependencies {
+    compileOnly 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
+    compileOnly 'com.github.MilkBowl:VaultAPI:1.7.1'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+processResources {
+    filesMatching('plugin.yml') {
+        expand version: project.version
+    }
+}
