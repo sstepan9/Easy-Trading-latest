@@ -4,8 +4,8 @@ plugins {
 
 group = 'com.easytrading'
 
-def mcVersion = project.findProperty('mc_version') ?: '1.21.11'
-def modVersion = project.findProperty('mod_version') ?: "${mcVersion}-0.9"
+def mcVersion = project.findProperty('mc_version') ?: '1.21.x'
+def modVersion = project.findProperty('mod_version') ?: "${mcVersion}-1.0"
 version = modVersion
 
 base {

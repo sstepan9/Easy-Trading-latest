@@ -4,6 +4,7 @@ import com.easytrading.paper.EasyTradingPlugin;
 import com.easytrading.paper.data.*;
 import com.easytrading.paper.gui.ConfirmationGui;
 import com.easytrading.paper.gui.MarketGui;
+import com.easytrading.paper.trade.TradeManager;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -39,6 +40,9 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             "/market sellto <amount> - sell item to bank\n" +
             "/market buyfrom <resource> <amount> - buy item from bank\n" +
             "/market send <nick> <amount> - transfer money\n" +
+            "/market trade <player> - send a trade request\n" +
+            "/market trade accept - accept a trade request\n" +
+            "/market trade decline - decline a trade request\n" +
             "/market team [name] - team balance\n" +
             "/market history - transaction history\n" +
             "/market limits - remaining bank limits\n" +
@@ -79,6 +83,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             case "history" -> handleHistory(player);
             case "limits" -> handleLimits(player);
             case "balance" -> handleBalance(player);
+            case "trade" -> handleTrade(player, args);
             case "hide" -> handleHide(player, true);
             case "show" -> handleHide(player, false);
             case "bankreload" -> handleBankReload(player);
@@ -547,6 +552,41 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleTrade(Player player, String[] args) {
+        TradeManager tradeManager = plugin.getTradeManager();
+
+        if (args.length < 2) {
+            player.sendMessage(Component.text("Usage: /market trade <player> | accept | decline").color(NamedTextColor.RED));
+            return true;
+        }
+
+        String sub = args[1].toLowerCase();
+
+        if (sub.equals("accept")) {
+            tradeManager.acceptRequest(player);
+            return true;
+        }
+
+        if (sub.equals("decline")) {
+            tradeManager.declineRequest(player);
+            return true;
+        }
+
+        // /market trade <player> — send a request
+        Player target = Bukkit.getPlayerExact(args[1]);
+        if (target == null) {
+            player.sendMessage(Component.text("Player not found or offline.").color(NamedTextColor.RED));
+            return true;
+        }
+        if (player.getUniqueId().equals(target.getUniqueId())) {
+            player.sendMessage(Component.text("You cannot trade with yourself.").color(NamedTextColor.RED));
+            return true;
+        }
+
+        tradeManager.sendRequest(player, target);
+        return true;
+    }
+
     private boolean handleCheckBalance(CommandSender sender, String[] args) {
         if (!sender.hasPermission("easytrading.admin")) {
             sender.sendMessage(Component.text("No permission.").color(NamedTextColor.RED));
@@ -625,7 +665,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(List.of(
-                    "sell", "sellto", "buyfrom", "send", "team", "history",
+                    "sell", "sellto", "buyfrom", "send", "trade", "team", "history",
                     "limits", "balance", "hide", "show", "help"
             ));
             if (sender.hasPermission("easytrading.admin")) {
@@ -642,7 +682,16 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
                 return Arrays.stream(MarketBankConfig.BUY_SUGGESTIONS)
                         .filter(s -> s.startsWith(prefix)).toList();
             }
-            if (sub.equals("send") || sub.equals("add") || sub.equals("take")) {
+            if (sub.equals("send") || sub.equals("add") || sub.equals("take") || sub.equals("trade")) {
+                if (sub.equals("trade")) {
+                    String prefix = args[1].toLowerCase();
+                    List<String> options = new ArrayList<>(List.of("accept", "decline"));
+                    for (Player p : Bukkit.getOnlinePlayers()) {
+                        if (sender instanceof Player sp && p.getUniqueId().equals(sp.getUniqueId())) continue;
+                        options.add(p.getName());
+                    }
+                    return options.stream().filter(s -> s.toLowerCase().startsWith(prefix)).toList();
+                }
                 return null; // default player names
             }
         }

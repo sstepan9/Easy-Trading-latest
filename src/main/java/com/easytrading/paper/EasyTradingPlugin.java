@@ -5,6 +5,7 @@ import com.easytrading.paper.data.*;
 import com.easytrading.paper.gui.ConfirmationGui;
 import com.easytrading.paper.gui.MarketGui;
 import com.easytrading.paper.listener.PlayerListener;
+import com.easytrading.paper.trade.TradeManager;
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -41,11 +42,13 @@ public class EasyTradingPlugin extends JavaPlugin {
     private final Set<UUID> hudHidden = ConcurrentHashMap.newKeySet();
     private final Map<UUID, BossBar> playerBossBars = new ConcurrentHashMap<>();
     private VaultEconomyProvider vaultProvider;
+    private TradeManager tradeManager;
 
     private static final long PENDING_TIMEOUT_MS = 5 * 60 * 1000L;
     private int saveTaskId = -1;
     private int hudTaskId = -1;
     private int cleanupTaskId = -1;
+    private int tradeCleanupTaskId = -1;
 
     @Override
     public void onEnable() {
@@ -66,6 +69,8 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         marketConfig.ensureLoaded();
         bankConfig.ensureLoaded();
+
+        tradeManager = new TradeManager(this);
 
         // Register commands
         MarketCommand cmd = new MarketCommand(this);
@@ -92,6 +97,9 @@ public class EasyTradingPlugin extends JavaPlugin {
         // Cleanup stale pending trades every minute (1200 ticks)
         cleanupTaskId = Bukkit.getScheduler().runTaskTimer(this, this::cleanupStalePending, 1200L, 1200L).getTaskId();
 
+        // Cleanup expired trade requests every 20 seconds (400 ticks)
+        tradeCleanupTaskId = Bukkit.getScheduler().runTaskTimer(this, () -> tradeManager.cleanupExpired(), 400L, 400L).getTaskId();
+
         // Register Vault Economy provider
         if (Bukkit.getPluginManager().getPlugin("Vault") != null) {
             vaultProvider = new VaultEconomyProvider(this);
@@ -109,6 +117,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         if (saveTaskId != -1) Bukkit.getScheduler().cancelTask(saveTaskId);
         if (hudTaskId != -1) Bukkit.getScheduler().cancelTask(hudTaskId);
         if (cleanupTaskId != -1) Bukkit.getScheduler().cancelTask(cleanupTaskId);
+        if (tradeCleanupTaskId != -1) Bukkit.getScheduler().cancelTask(tradeCleanupTaskId);
 
         // Unregister Vault provider
         if (vaultProvider != null) {
@@ -190,6 +199,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         pendingBank.remove(uuid);
         openMarketGuis.remove(uuid);
         openConfirmations.remove(uuid);
+        tradeManager.handleDisconnect(player);
         BossBar bar = playerBossBars.remove(uuid);
         if (bar != null) {
             player.hideBossBar(bar);
@@ -271,6 +281,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     public MarketBankState getBankState() { return bankState; }
     public TransactionHistoryData getTransactionHistory() { return transactionHistory; }
     public MarketNotifyData getMarketNotify() { return marketNotify; }
+    public TradeManager getTradeManager() { return tradeManager; }
 
     // ── Fee Computation ──
 
