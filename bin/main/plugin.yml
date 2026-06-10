@@ -2,7 +2,6 @@ name: EasyTrading
 version: '${version}'
 main: com.easytrading.paper.EasyTradingPlugin
 api-version: '1.21'
-folia-supported: ${foliaSupported}
 description: A comprehensive economy and trading plugin for Minecraft servers
 authors:
   - EasyTrading
@@ -13,7 +12,7 @@ softdepend:
 commands:
   market:
     description: Open the market or execute trading commands
-    usage: /market [my|seller|search|sell|pur|purchase|relist|cancelall|sellto|buyfrom|send|trade|team|history|limits|hide|show|balance|help|bankreload|clearlimits|change|add|take] [args...]
+    usage: /market [sell|sellto|buyfrom|send|trade|team|history|limits|hide|show|balance|help|bankreload|clearlimits|change|add|take] [args...]
   checkbalance:
     description: Check another player's balance (OP only)
     usage: /checkbalance <player>

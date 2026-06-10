@@ -1,5 +1,7 @@
 param(
     [string[]]$MinecraftVersions,
+    [string]$ReleasePeriod = (Get-Date -Format "MM.yy"),
+    [string]$ReleaseIteration = "01",
     [switch]$NoClean
 )
 
@@ -7,7 +9,6 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $distDir = Join-Path $root "dist"
-$baseModVersion = "0.9"
 
 $targets = @(
     "1.21.1",
@@ -34,7 +35,7 @@ New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 $failed = @()
 
 foreach ($mcVersion in $targets) {
-    $modVersion = "$mcVersion-$baseModVersion"
+    $modVersion = "$mcVersion-$ReleasePeriod.$ReleaseIteration"
     $gradleTasks = @()
     if (-not $NoClean) {
         $gradleTasks += "clean"
