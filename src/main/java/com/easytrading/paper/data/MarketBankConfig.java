@@ -1,5 +1,6 @@
 package com.easytrading.paper.data;
 
+import com.easytrading.paper.gui.MarketGui;
 import com.google.gson.*;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -48,7 +49,8 @@ public class MarketBankConfig {
     }
 
     public static final String[] BUY_SUGGESTIONS = {
-            "coal", "redstone", "lapis", "copper", "iron", "gold", "diamond", "emerald", "netherite"
+            "coal", "redstone", "lapis", "copper", "iron", "gold", "diamond", "emerald", "netherite",
+            "уголь", "редстоун", "лазурит", "медь", "железо", "золото", "алмаз", "изумруд", "незерит"
     };
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -91,35 +93,24 @@ public class MarketBankConfig {
         save();
     }
 
-    public static final Map<String, String> DISPLAY_NAMES = Map.of(
-            "minecraft:coal", "Уголь",
-            "minecraft:redstone", "Редстоун",
-            "minecraft:lapis_lazuli", "Лазурит",
-            "minecraft:copper_ingot", "Медь",
-            "minecraft:iron_ingot", "Железо",
-            "minecraft:gold_ingot", "Золото",
-            "minecraft:diamond", "Алмаз",
-            "minecraft:emerald", "Изумруд",
-            "minecraft:netherite_ingot", "Незерит"
-    );
-
     public static String getDisplayName(String itemId) {
-        return DISPLAY_NAMES.getOrDefault(itemId, itemId);
+        Material material = toMaterial(itemId);
+        return material == null ? itemId : MarketGui.getItemName(new ItemStack(material));
     }
 
     public String resolveResourceId(String input) {
         if (input == null) return null;
         String key = input.toLowerCase();
         return switch (key) {
-            case "уголь", "coal", "minecraft:coal" -> "minecraft:coal";
-            case "редстоун", "redstone", "minecraft:redstone" -> "minecraft:redstone";
-            case "лазурит", "лапис", "lapis", "lapis_lazuli", "minecraft:lapis_lazuli" -> "minecraft:lapis_lazuli";
-            case "медь", "медные", "copper", "copper_ingot", "minecraft:copper_ingot" -> "minecraft:copper_ingot";
-            case "железо", "железные", "iron", "iron_ingot", "minecraft:iron_ingot" -> "minecraft:iron_ingot";
-            case "золото", "золотые", "gold", "gold_ingot", "minecraft:gold_ingot" -> "minecraft:gold_ingot";
-            case "алмаз", "алмазы", "diamond", "minecraft:diamond" -> "minecraft:diamond";
-            case "изумруд", "изумруды", "emerald", "minecraft:emerald" -> "minecraft:emerald";
-            case "незерит", "незеритовые", "netherite", "netherite_ingot", "minecraft:netherite_ingot" -> "minecraft:netherite_ingot";
+            case "coal", "minecraft:coal", "уголь" -> "minecraft:coal";
+            case "redstone", "minecraft:redstone", "редстоун" -> "minecraft:redstone";
+            case "lapis", "lapis_lazuli", "minecraft:lapis_lazuli", "лазурит", "лазурь" -> "minecraft:lapis_lazuli";
+            case "copper", "copper_ingot", "minecraft:copper_ingot", "медь" -> "minecraft:copper_ingot";
+            case "iron", "iron_ingot", "minecraft:iron_ingot", "железо" -> "minecraft:iron_ingot";
+            case "gold", "gold_ingot", "minecraft:gold_ingot", "золото" -> "minecraft:gold_ingot";
+            case "diamond", "minecraft:diamond", "алмаз" -> "minecraft:diamond";
+            case "emerald", "minecraft:emerald", "изумруд" -> "minecraft:emerald";
+            case "netherite", "netherite_ingot", "minecraft:netherite_ingot", "незерит" -> "minecraft:netherite_ingot";
             default -> null;
         };
     }

@@ -44,18 +44,18 @@ public class TradeManager {
 
         // Check if sender already has an active session
         if (activeSessions.containsKey(senderUuid)) {
-            sender.sendMessage(Component.text("You are already in a trade.").color(NamedTextColor.RED));
+            plugin.sendMessage(sender, plugin.trc("trade.error.already_in_trade", NamedTextColor.RED));
             return;
         }
         if (activeSessions.containsKey(targetUuid)) {
-            sender.sendMessage(Component.text("This player is already in a trade.").color(NamedTextColor.RED));
+            plugin.sendMessage(sender, plugin.trc("trade.error.target_in_trade", NamedTextColor.RED));
             return;
         }
 
         // Check if target already has a pending request from this sender
         TradeRequest existing = pendingRequests.get(targetUuid);
         if (existing != null && existing.getSender().equals(senderUuid)) {
-            sender.sendMessage(Component.text("You already sent a trade request to this player.").color(NamedTextColor.YELLOW));
+            plugin.sendMessage(sender, plugin.trc("trade.error.request_already_sent", NamedTextColor.YELLOW));
             return;
         }
 
@@ -74,21 +74,21 @@ public class TradeManager {
         TradeRequest request = new TradeRequest(senderUuid, targetUuid, System.currentTimeMillis());
         pendingRequests.put(targetUuid, request);
 
-        sender.sendMessage(Component.text("Trade request sent to " + target.getName() + ".").color(NamedTextColor.GREEN));
+        plugin.sendMessage(sender, plugin.trc("trade.request.sent", NamedTextColor.GREEN, target.getName()));
 
         // Send clickable message to target
-        Component acceptBtn = Component.text("[Accept]")
+        Component acceptBtn = Component.text(plugin.tr("trade.request.accept"))
                 .color(NamedTextColor.GREEN)
                 .decorate(TextDecoration.BOLD)
                 .clickEvent(ClickEvent.runCommand("/market trade accept"));
 
-        Component declineBtn = Component.text("[Decline]")
+        Component declineBtn = Component.text(plugin.tr("trade.request.decline"))
                 .color(NamedTextColor.RED)
                 .decorate(TextDecoration.BOLD)
                 .clickEvent(ClickEvent.runCommand("/market trade decline"));
 
-        target.sendMessage(
-                Component.text(sender.getName() + " wants to trade with you! ").color(NamedTextColor.GOLD)
+        plugin.sendMessage(target, 
+                Component.text(plugin.tr("trade.request.incoming", sender.getName())).color(NamedTextColor.GOLD)
                         .append(acceptBtn)
                         .append(Component.text(" ").color(NamedTextColor.WHITE))
                         .append(declineBtn)
@@ -104,23 +104,23 @@ public class TradeManager {
 
         if (request == null || System.currentTimeMillis() - request.getTimestamp() > REQUEST_TIMEOUT_MS) {
             pendingRequests.remove(targetUuid);
-            target.sendMessage(Component.text("No pending trade request or it has expired.").color(NamedTextColor.RED));
+            plugin.sendMessage(target, plugin.trc("trade.error.no_request_or_expired", NamedTextColor.RED));
             return;
         }
 
         if (activeSessions.containsKey(targetUuid)) {
-            target.sendMessage(Component.text("You are already in a trade.").color(NamedTextColor.RED));
+            plugin.sendMessage(target, plugin.trc("trade.error.already_in_trade", NamedTextColor.RED));
             return;
         }
 
         Player sender = Bukkit.getPlayer(request.getSender());
         if (sender == null || !sender.isOnline()) {
-            target.sendMessage(Component.text("The player who requested the trade is offline.").color(NamedTextColor.RED));
+            plugin.sendMessage(target, plugin.trc("trade.error.requester_offline", NamedTextColor.RED));
             return;
         }
 
         if (activeSessions.containsKey(sender.getUniqueId())) {
-            target.sendMessage(Component.text("That player is already in another trade.").color(NamedTextColor.RED));
+            plugin.sendMessage(target, plugin.trc("trade.error.requester_busy", NamedTextColor.RED));
             return;
         }
 
@@ -135,15 +135,15 @@ public class TradeManager {
         TradeRequest request = pendingRequests.remove(targetUuid);
 
         if (request == null) {
-            target.sendMessage(Component.text("No pending trade request.").color(NamedTextColor.RED));
+            plugin.sendMessage(target, plugin.trc("trade.error.no_request", NamedTextColor.RED));
             return;
         }
 
-        target.sendMessage(Component.text("Trade request declined.").color(NamedTextColor.YELLOW));
+        plugin.sendMessage(target, plugin.trc("trade.request.declined_self", NamedTextColor.YELLOW));
 
         Player sender = Bukkit.getPlayer(request.getSender());
         if (sender != null && sender.isOnline()) {
-            sender.sendMessage(Component.text(target.getName() + " declined your trade request.").color(NamedTextColor.RED));
+            plugin.sendMessage(sender, plugin.trc("trade.request.declined_other", NamedTextColor.RED, target.getName()));
         }
     }
 
@@ -210,7 +210,7 @@ public class TradeManager {
             if (now - entry.getValue().getTimestamp() > REQUEST_TIMEOUT_MS) {
                 Player sender = Bukkit.getPlayer(entry.getValue().getSender());
                 if (sender != null && sender.isOnline()) {
-                    sender.sendMessage(Component.text("Your trade request has expired.").color(NamedTextColor.YELLOW));
+                    plugin.sendMessage(sender, plugin.trc("trade.request.expired", NamedTextColor.YELLOW));
                 }
                 return true;
             }
@@ -218,3 +218,4 @@ public class TradeManager {
         });
     }
 }
+

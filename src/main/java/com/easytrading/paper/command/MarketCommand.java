@@ -5,6 +5,7 @@ import com.easytrading.paper.data.*;
 import com.easytrading.paper.gui.ConfirmationGui;
 import com.easytrading.paper.gui.MarketGui;
 import com.easytrading.paper.trade.TradeManager;
+import com.easytrading.paper.util.Items;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -16,7 +17,6 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.scoreboard.Team;
-import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -33,37 +33,26 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
     private static final DateTimeFormatter TRANSFER_LOG_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault());
 
-    private static final String HELP_TEXT =
-            "Available commands:\n" +
-            "/market - open market\n" +
-            "/market sell <price> - list held item\n" +
-            "/market sellto <amount> - sell item to bank\n" +
-            "/market buyfrom <resource> <amount> - buy item from bank\n" +
-            "/market send <nick> <amount> - transfer money\n" +
-            "/market trade <player> - send a trade request\n" +
-            "/market trade accept - accept a trade request\n" +
-            "/market trade decline - decline a trade request\n" +
-            "/market team [name] - team balance\n" +
-            "/market history - transaction history\n" +
-            "/market limits - remaining bank limits\n" +
-            "/market hide | /market show - hide/show balance HUD\n" +
-            "/market bankreload - reload bank rates\n" +
-            "/market clearlimits - reset bank limits\n" +
-            "/market change <percent> - set bank tax\n" +
-            "/market help - show this help";
+    private static final String[] HELP_KEYS = {
+            "command.help.1", "command.help.2", "command.help.3", "command.help.4", "command.help.5",
+            "command.help.6", "command.help.7", "command.help.8", "command.help.9", "command.help.10",
+            "command.help.11", "command.help.12", "command.help.13", "command.help.14", "command.help.15",
+            "command.help.16", "command.help.17", "command.help.18", "command.help.19", "command.help.20",
+            "command.help.21", "command.help.22"
+    };
 
     public MarketCommand(EasyTradingPlugin plugin) {
         this.plugin = plugin;
     }
 
     @Override
-    public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, String[] args) {
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (command.getName().equalsIgnoreCase("checkbalance")) {
             return handleCheckBalance(sender, args);
         }
 
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(Component.text("This command can only be used by players.").color(NamedTextColor.RED));
+            plugin.sendMessage(sender, plugin.trc("command.player_only", NamedTextColor.RED));
             return true;
         }
 
@@ -75,7 +64,13 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         String sub = args[0].toLowerCase();
         return switch (sub) {
             case "help" -> { showHelp(player); yield true; }
+            case "my" -> handleMy(player);
+            case "seller" -> handleSeller(player, args);
+            case "search" -> handleSearch(player, args);
             case "sell" -> handleSell(player, args);
+            case "pur", "purchase" -> handlePurchase(player);
+            case "relist" -> handleRelist(player, args);
+            case "cancelall" -> handleCancelAll(player);
             case "sellto" -> handleSellTo(player, args);
             case "buyfrom" -> handleBuyFrom(player, args);
             case "send" -> handleSend(player, args);
@@ -92,33 +87,75 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             case "add" -> handleAdd(player, args);
             case "take" -> handleTake(player, args);
             default -> {
-                player.sendMessage(Component.text("Unknown subcommand. Use /market help").color(NamedTextColor.RED));
+                plugin.sendMessage(player, plugin.trc("command.unknown_subcommand", NamedTextColor.RED));
                 yield true;
             }
         };
     }
 
     private void openMarketScreen(Player player) {
-        MarketGui gui = new MarketGui(plugin, player);
-        plugin.registerMarketGui(player, gui);
-        gui.open();
+        plugin.openMarket(player);
+    }
+
+    private void openMarketScreen(Player player, MarketGui.ViewOptions viewOptions) {
+        plugin.openMarket(player, viewOptions);
     }
 
     private void showHelp(Player player) {
-        for (String line : HELP_TEXT.split("\n")) {
-            player.sendMessage(Component.text(line).color(NamedTextColor.WHITE));
+        for (String key : HELP_KEYS) {
+            plugin.sendMessage(player, Component.text(plugin.tr(key)).color(NamedTextColor.WHITE));
         }
+    }
+
+    private boolean handleMy(Player player) {
+        openMarketScreen(player, new MarketGui.ViewOptions(player.getUniqueId(), player.getName(), null,
+                MarketGui.SortMode.NEWEST, MarketGui.DisplayMode.SELLING));
+        return true;
+    }
+
+    private boolean handleSeller(Player player, String[] args) {
+        if (args.length < 2) {
+            plugin.sendMessage(player, plugin.trc("command.usage.market_seller", NamedTextColor.RED));
+            return true;
+        }
+
+        EasyTradingPlugin.MarketSellerMatch sellerMatch = plugin.findMarketSeller(args[1]);
+        if (sellerMatch == null) {
+            plugin.sendMessage(player, plugin.trc("command.seller_not_found", NamedTextColor.RED));
+            return true;
+        }
+
+        openMarketScreen(player, new MarketGui.ViewOptions(
+                sellerMatch.uuid(), sellerMatch.name(), null, MarketGui.SortMode.NEWEST, MarketGui.DisplayMode.SELLING));
+        return true;
+    }
+
+    private boolean handleSearch(Player player, String[] args) {
+        if (args.length < 2) {
+            plugin.sendMessage(player, plugin.trc("command.usage.market_search", NamedTextColor.RED));
+            return true;
+        }
+
+        String query = String.join(" ", Arrays.copyOfRange(args, 1, args.length)).trim();
+        if (query.isEmpty()) {
+            plugin.sendMessage(player, plugin.trc("command.search_empty", NamedTextColor.RED));
+            return true;
+        }
+
+        openMarketScreen(player, new MarketGui.ViewOptions(null, null, query,
+                MarketGui.SortMode.NEWEST, MarketGui.DisplayMode.SELLING));
+        return true;
     }
 
     private boolean handleSell(Player player, String[] args) {
         if (args.length < 2) {
-            player.sendMessage(Component.text("Usage: /market sell <price>").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_sell", NamedTextColor.RED));
             return true;
         }
 
         ItemStack inHand = player.getInventory().getItemInMainHand();
-        if (inHand.isEmpty()) {
-            player.sendMessage(Component.text("Hold an item in your hand.").color(NamedTextColor.RED));
+        if (Items.isEmpty(inHand)) {
+            plugin.sendMessage(player, plugin.trc("error.hold_item_in_hand", NamedTextColor.RED));
             return true;
         }
 
@@ -126,36 +163,31 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         MarketBankConfig bankConfig = plugin.getBankConfig();
         bankConfig.ensureLoaded();
         if (bankConfig.get(itemId) != null) {
-            player.sendMessage(Component.text("This resource is sold via /market sellto.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.sellto_resource_hint", NamedTextColor.RED));
             return true;
         }
 
         if (plugin.getPendingSale(player) != null) {
-            player.sendMessage(Component.text("You already have a pending confirmation.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.pending_confirmation", NamedTextColor.RED));
             return true;
         }
 
         long price;
         try {
-            price = Long.parseLong(args[1]);
-            if (price <= 0) throw new NumberFormatException();
+            price = parseListingPrice(args[1]);
         } catch (NumberFormatException e) {
-            player.sendMessage(Component.text("Invalid price.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_price", NamedTextColor.RED));
             return true;
         }
+
+        if (!validateListingPrice(player, price)) return true;
 
         MarketConfig config = plugin.getMarketConfig();
         config.ensureLoaded();
-        if (price < config.getMinPrice() || price > config.getMaxPrice()) {
-            player.sendMessage(Component.text("Price must be in range " + config.getMinPrice() + " - " + config.getMaxPrice() + ".")
-                    .color(NamedTextColor.RED));
-            return true;
-        }
 
-        int activeListings = plugin.getMarketData().countBySeller(player.getUniqueId());
+        int activeListings = plugin.getMarketData().countOffersByOwner(player.getUniqueId());
         if (activeListings >= config.getHardListingCap()) {
-            player.sendMessage(Component.text("Active listing limit reached (" + config.getHardListingCap() + ").")
-                    .color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.active_listing_limit", NamedTextColor.RED, config.getHardListingCap()));
             return true;
         }
 
@@ -168,15 +200,97 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handlePurchase(Player player) {
+        if (plugin.getPendingPurchaseOrder(player) != null) {
+            plugin.sendMessage(player, plugin.trc("error.pending_confirmation", NamedTextColor.RED));
+            return true;
+        }
+        if (plugin.hasPendingPurchaseBlockSearchPrompt(player) || plugin.hasPendingPurchaseTotalPricePrompt(player)) {
+            plugin.sendMessage(player, plugin.trc("purchase_setup.finish_current", NamedTextColor.RED));
+            return true;
+        }
+
+        plugin.openPurchaseSetup(player);
+        return true;
+    }
+
+    private boolean handleRelist(Player player, String[] args) {
+        if (args.length < 2) {
+            plugin.sendMessage(player, plugin.trc("command.usage.market_relist", NamedTextColor.RED));
+            return true;
+        }
+
+        int listingId;
+        try {
+            listingId = Integer.parseInt(args[1]);
+            if (listingId <= 0) throw new NumberFormatException();
+        } catch (NumberFormatException e) {
+            plugin.sendMessage(player, plugin.trc("error.invalid_listing_id", NamedTextColor.RED));
+            return true;
+        }
+
+        Optional<MarketData.Listing> listingOpt = plugin.getMarketData().getListing(listingId);
+        if (listingOpt.isEmpty()) {
+            plugin.sendMessage(player, plugin.trc("listing.not_found", NamedTextColor.RED));
+            return true;
+        }
+
+        MarketData.Listing listing = listingOpt.get();
+        if (!listing.seller.equals(player.getUniqueId())) {
+            plugin.sendMessage(player, plugin.trc("listing.relist_own_only", NamedTextColor.RED));
+            return true;
+        }
+
+        long newPrice = listing.price;
+        if (args.length >= 3) {
+            try {
+                newPrice = parseListingPrice(args[2]);
+            } catch (NumberFormatException e) {
+                plugin.sendMessage(player, plugin.trc("error.invalid_price", NamedTextColor.RED));
+                return true;
+            }
+        }
+
+        if (!validateListingPrice(player, newPrice)) return true;
+
+        plugin.getMarketData().relist(listingId, newPrice, System.currentTimeMillis());
+        plugin.refreshAllMarketGuis();
+        plugin.sendMessage(player, plugin.trc("listing.relisted", NamedTextColor.GREEN, listingId, newPrice));
+        return true;
+    }
+
+    private boolean handleCancelAll(Player player) {
+        List<MarketData.Listing> removed = plugin.getMarketData().removeBySeller(player.getUniqueId());
+        if (removed.isEmpty()) {
+            plugin.sendMessage(player, plugin.trc("listing.none_active", NamedTextColor.YELLOW));
+            return true;
+        }
+
+        int totalItems = 0;
+        for (MarketData.Listing listing : removed) {
+            totalItems += listing.stack.getAmount();
+            Map<Integer, ItemStack> leftover = player.getInventory().addItem(listing.stack.clone());
+            if (!leftover.isEmpty()) {
+                for (ItemStack item : leftover.values()) {
+                    player.getWorld().dropItemNaturally(player.getLocation(), item);
+                }
+            }
+        }
+
+        plugin.refreshAllMarketGuis();
+        plugin.sendMessage(player, plugin.trc("listing.cancel_all_done", NamedTextColor.GREEN, removed.size(), totalItems));
+        return true;
+    }
+
     private boolean handleSellTo(Player player, String[] args) {
         if (args.length < 2) {
-            player.sendMessage(Component.text("Usage: /market sellto <amount>").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_sellto", NamedTextColor.RED));
             return true;
         }
 
         ItemStack inHand = player.getInventory().getItemInMainHand();
-        if (inHand.isEmpty()) {
-            player.sendMessage(Component.text("Hold an item in your hand.").color(NamedTextColor.RED));
+        if (Items.isEmpty(inHand)) {
+            plugin.sendMessage(player, plugin.trc("error.hold_item_in_hand", NamedTextColor.RED));
             return true;
         }
 
@@ -185,12 +299,12 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             amount = Long.parseLong(args[1]);
             if (amount <= 0 || amount > Integer.MAX_VALUE) throw new NumberFormatException();
         } catch (NumberFormatException e) {
-            player.sendMessage(Component.text("Invalid amount.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
 
         if (plugin.getPendingBank(player) != null) {
-            player.sendMessage(Component.text("You already have a pending confirmation.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.pending_confirmation", NamedTextColor.RED));
             return true;
         }
 
@@ -199,7 +313,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         String itemId = MarketBankConfig.toMinecraftId(inHand.getType());
         MarketBankConfig.BankResource resource = bankConfig.get(itemId);
         if (resource == null) {
-            player.sendMessage(Component.text("This item is not accepted by the bank.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("bank.item_not_accepted", NamedTextColor.RED));
             MarketBankConfig.logTrade(plugin.getDataFolder().toPath(), player, "sellto", itemId,
                     MarketGui.getItemName(inHand), (int) amount, inHand.getAmount(),
                     0, 0L, 0L, 0, 0,
@@ -213,7 +327,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         int requestedInput = (int) Math.min(amount, Integer.MAX_VALUE);
         int requested = Math.min(requestedInput, inHandCount);
         if (requested <= 0) {
-            player.sendMessage(Component.text("Invalid amount.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
 
@@ -222,7 +336,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         bankState.ensureToday();
         int remaining = bankState.getRemaining(player.getUniqueId(), itemId, resource.limit());
         if (remaining <= 0) {
-            player.sendMessage(Component.text("Daily sell limit for this resource is reached.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("bank.sell_limit_reached", NamedTextColor.RED));
             MarketBankConfig.logTrade(plugin.getDataFolder().toPath(), player, "sellto", itemId,
                     MarketGui.getItemName(inHand), requestedInput, inHandCount,
                     0, sellPrice, 0L, resource.limit(), remaining,
@@ -247,7 +361,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleBuyFrom(Player player, String[] args) {
         if (args.length < 3) {
-            player.sendMessage(Component.text("Usage: /market buyfrom <resource> <amount>").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_buyfrom", NamedTextColor.RED));
             return true;
         }
 
@@ -256,12 +370,12 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             amount = Long.parseLong(args[2]);
             if (amount <= 0 || amount > Integer.MAX_VALUE) throw new NumberFormatException();
         } catch (NumberFormatException e) {
-            player.sendMessage(Component.text("Invalid amount.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
 
         if (plugin.getPendingBank(player) != null) {
-            player.sendMessage(Component.text("You already have a pending confirmation.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.pending_confirmation", NamedTextColor.RED));
             return true;
         }
 
@@ -269,19 +383,19 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         bankConfig.ensureLoaded();
         String resolved = bankConfig.resolveResourceId(args[1]);
         if (resolved == null) {
-            player.sendMessage(Component.text("Unknown resource.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("bank.unknown_resource", NamedTextColor.RED));
             return true;
         }
 
         MarketBankConfig.BankResource resource = bankConfig.get(resolved);
         if (resource == null) {
-            player.sendMessage(Component.text("This resource is not sold by the bank.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("bank.resource_not_sold", NamedTextColor.RED));
             return true;
         }
 
         int requested = (int) amount;
         if (requested <= 0) {
-            player.sendMessage(Component.text("Invalid amount.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
 
@@ -290,26 +404,26 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         int buyLimit = bankConfig.getBuyLimit(resource);
         int remaining = bankState.getRemainingBuy(player.getUniqueId(), resolved, buyLimit);
         if (remaining <= 0) {
-            player.sendMessage(Component.text("Daily buy limit for this resource is reached.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("bank.buy_limit_reached", NamedTextColor.RED));
             return true;
         }
 
         long price = bankConfig.getBuyPrice(resolved);
         long balance = plugin.getEconomy().get(player.getUniqueId());
         if (balance < price) {
-            player.sendMessage(Component.text("Not enough funds.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.not_enough_funds", NamedTextColor.RED));
             return true;
         }
 
         Material mat = MarketBankConfig.toMaterial(resolved);
         if (mat == null) {
-            player.sendMessage(Component.text("Resource unavailable.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.resource_unavailable", NamedTextColor.RED));
             return true;
         }
 
         int space = getMaxInsertable(player, new ItemStack(mat, 1));
         if (space <= 0) {
-            player.sendMessage(Component.text("No inventory space.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.no_inventory_space", NamedTextColor.RED));
             return true;
         }
 
@@ -318,7 +432,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
         String itemName = MarketGui.getItemName(new ItemStack(mat));
         plugin.setPendingBank(player, new EasyTradingPlugin.PendingBankTrade(
-                "buyfrom", ItemStack.empty(), resolved, itemName,
+                "buyfrom", Items.empty(), resolved, itemName,
                 requested, accepted, price, total));
 
         new ConfirmationGui(plugin, player, ConfirmationGui.Type.BANK_BUY,
@@ -329,17 +443,17 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleSend(Player player, String[] args) {
         if (args.length < 3) {
-            player.sendMessage(Component.text("Usage: /market send <player> <amount>").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_send", NamedTextColor.RED));
             return true;
         }
 
         Player target = Bukkit.getPlayerExact(args[1]);
         if (target == null) {
-            player.sendMessage(Component.text("Player not found.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.player_not_found", NamedTextColor.RED));
             return true;
         }
         if (player.getUniqueId().equals(target.getUniqueId())) {
-            player.sendMessage(Component.text("You cannot send money to yourself.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.send.self", NamedTextColor.RED));
             return true;
         }
 
@@ -348,13 +462,13 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             amount = Long.parseLong(args[2]);
             if (amount <= 0) throw new NumberFormatException();
         } catch (NumberFormatException e) {
-            player.sendMessage(Component.text("Invalid amount.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
 
         EconomyData economy = plugin.getEconomy();
         if (economy.get(player.getUniqueId()) < amount) {
-            player.sendMessage(Component.text("Not enough funds.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.not_enough_funds", NamedTextColor.RED));
             return true;
         }
 
@@ -363,8 +477,8 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         plugin.syncBalance(player);
         plugin.syncBalance(target);
 
-        player.sendMessage(Component.text("Sent " + amount + " to player " + target.getName()).color(NamedTextColor.GREEN));
-        target.sendMessage(Component.text("Received " + amount + " from " + player.getName()).color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("command.send.done_sender", NamedTextColor.GREEN, amount, target.getName()));
+        plugin.sendMessage(target, plugin.trc("command.send.done_target", NamedTextColor.GREEN, amount, player.getName()));
 
         logTransfer(player, target, amount);
 
@@ -377,26 +491,26 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
     private boolean handleTeam(Player player, String[] args) {
         if (args.length >= 2) {
             if (!player.hasPermission("easytrading.admin")) {
-                player.sendMessage(Component.text("Only OP can specify a team name.").color(NamedTextColor.RED));
+                plugin.sendMessage(player, plugin.trc("command.team.admin_only", NamedTextColor.RED));
                 return true;
             }
             Team team = Bukkit.getScoreboardManager().getMainScoreboard().getTeam(args[1]);
             if (team == null) {
-                player.sendMessage(Component.text("Team not found.").color(NamedTextColor.RED));
+                plugin.sendMessage(player, plugin.trc("command.team.not_found", NamedTextColor.RED));
                 return true;
             }
             long sum = sumTeamBalance(team);
-            player.sendMessage(Component.text("Team " + team.getName() + " balance: " + sum).color(NamedTextColor.GREEN));
+            plugin.sendMessage(player, plugin.trc("command.team.balance", NamedTextColor.GREEN, team.getName(), sum));
             return true;
         }
 
         Team team = Bukkit.getScoreboardManager().getMainScoreboard().getPlayerTeam(player);
         if (team == null) {
-            player.sendMessage(Component.text("You are not in a team.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.team.no_team", NamedTextColor.RED));
             return true;
         }
         long sum = sumTeamBalance(team);
-        player.sendMessage(Component.text("Team " + team.getName() + " balance: " + sum).color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("command.team.balance", NamedTextColor.GREEN, team.getName(), sum));
         return true;
     }
 
@@ -404,12 +518,12 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         TransactionHistoryData history = plugin.getTransactionHistory();
         List<TransactionHistoryData.Transaction> recent = history.getRecent(player.getUniqueId(), 10);
         if (recent.isEmpty()) {
-            player.sendMessage(Component.text("Transaction history is empty.").color(NamedTextColor.YELLOW));
+            plugin.sendMessage(player, plugin.trc("history.empty", NamedTextColor.YELLOW));
             return true;
         }
-        player.sendMessage(Component.text("--- Transaction History ---").color(NamedTextColor.GOLD));
+        plugin.sendMessage(player, plugin.trc("history.header", NamedTextColor.GOLD));
         for (TransactionHistoryData.Transaction t : recent) {
-            player.sendMessage(Component.text(t.format()).color(NamedTextColor.WHITE));
+            plugin.sendMessage(player, Component.text(t.format(plugin.getLocalization())).color(NamedTextColor.WHITE));
         }
         return true;
     }
@@ -420,7 +534,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         MarketBankState bankState = plugin.getBankState();
         bankState.ensureToday();
 
-        player.sendMessage(Component.text("--- Bank Limits for Today ---").color(NamedTextColor.GOLD));
+        plugin.sendMessage(player, plugin.trc("bank.limits.header", NamedTextColor.GOLD));
         for (Map.Entry<String, MarketBankConfig.BankResource> entry : bankConfig.getResources().entrySet()) {
             String itemId = entry.getKey();
             MarketBankConfig.BankResource res = entry.getValue();
@@ -430,7 +544,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             int buyRemaining = bankState.getRemainingBuy(player.getUniqueId(), itemId, buyLimit);
             int sellUsed = res.limit() - sellRemaining;
             int buyUsed = buyLimit - buyRemaining;
-            player.sendMessage(Component.text(String.format("%s: sell %d/%d | buy %d/%d",
+            plugin.sendMessage(player, Component.text(plugin.tr("bank.limits.line",
                     displayName, sellUsed, res.limit(), buyUsed, buyLimit)).color(NamedTextColor.WHITE));
         }
         return true;
@@ -438,47 +552,47 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleBalance(Player player) {
         long balance = plugin.getEconomy().get(player.getUniqueId());
-        player.sendMessage(Component.text("Your balance: " + balance).color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("command.balance.self", NamedTextColor.GREEN, balance));
         return true;
     }
 
     private boolean handleHide(Player player, boolean hide) {
         plugin.setHudHidden(player, hide);
         if (hide) {
-            player.sendMessage(Component.text("Balance HUD hidden.").color(NamedTextColor.YELLOW));
+            plugin.sendMessage(player, plugin.trc("hud.hidden", NamedTextColor.YELLOW));
         } else {
-            player.sendMessage(Component.text("Balance HUD shown.").color(NamedTextColor.GREEN));
+            plugin.sendMessage(player, plugin.trc("hud.shown", NamedTextColor.GREEN));
         }
         return true;
     }
 
     private boolean handleBankReload(Player player) {
         if (!player.hasPermission("easytrading.admin")) {
-            player.sendMessage(Component.text("No permission.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.no_permission", NamedTextColor.RED));
             return true;
         }
         plugin.getBankConfig().reload();
-        player.sendMessage(Component.text("Bank rates reloaded.").color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("bank.reload.done", NamedTextColor.GREEN));
         return true;
     }
 
     private boolean handleClearLimits(Player player) {
         if (!player.hasPermission("easytrading.admin")) {
-            player.sendMessage(Component.text("No permission.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.no_permission", NamedTextColor.RED));
             return true;
         }
         plugin.getBankState().resetToday();
-        player.sendMessage(Component.text("Bank limits reset.").color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("bank.clear_limits.done", NamedTextColor.GREEN));
         return true;
     }
 
     private boolean handleChange(Player player, String[] args) {
         if (!player.hasPermission("easytrading.admin")) {
-            player.sendMessage(Component.text("No permission.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.no_permission", NamedTextColor.RED));
             return true;
         }
         if (args.length < 2) {
-            player.sendMessage(Component.text("Usage: /market change <percent>").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_change", NamedTextColor.RED));
             return true;
         }
         int percent;
@@ -486,26 +600,26 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             percent = Integer.parseInt(args[1]);
             if (percent < 0 || percent > 100) throw new NumberFormatException();
         } catch (NumberFormatException e) {
-            player.sendMessage(Component.text("Invalid percentage (0-100).").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_percentage", NamedTextColor.RED));
             return true;
         }
         plugin.getBankConfig().setTaxPercent(percent);
-        player.sendMessage(Component.text("Bank tax set to: " + percent + "%").color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("bank.tax_set", NamedTextColor.GREEN, percent));
         return true;
     }
 
     private boolean handleAdd(Player player, String[] args) {
         if (!player.hasPermission("easytrading.admin")) {
-            player.sendMessage(Component.text("No permission.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.no_permission", NamedTextColor.RED));
             return true;
         }
         if (args.length < 3) {
-            player.sendMessage(Component.text("Usage: /market add <player> <amount>").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_add", NamedTextColor.RED));
             return true;
         }
         Player target = Bukkit.getPlayerExact(args[1]);
         if (target == null) {
-            player.sendMessage(Component.text("Player not found or offline.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.player_not_found_offline", NamedTextColor.RED));
             return true;
         }
         long amount;
@@ -513,28 +627,28 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             amount = Long.parseLong(args[2]);
             if (amount <= 0) throw new NumberFormatException();
         } catch (NumberFormatException e) {
-            player.sendMessage(Component.text("Invalid amount.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
         plugin.getEconomy().add(target.getUniqueId(), amount);
         plugin.syncBalance(target);
-        player.sendMessage(Component.text("Added " + amount + " to player " + target.getName()).color(NamedTextColor.GREEN));
-        target.sendMessage(Component.text("Balance increased by " + amount).color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("admin.add.done_sender", NamedTextColor.GREEN, amount, target.getName()));
+        plugin.sendMessage(target, plugin.trc("admin.add.done_target", NamedTextColor.GREEN, amount));
         return true;
     }
 
     private boolean handleTake(Player player, String[] args) {
         if (!player.hasPermission("easytrading.admin")) {
-            player.sendMessage(Component.text("No permission.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.no_permission", NamedTextColor.RED));
             return true;
         }
         if (args.length < 3) {
-            player.sendMessage(Component.text("Usage: /market take <player> <amount>").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_take", NamedTextColor.RED));
             return true;
         }
         Player target = Bukkit.getPlayerExact(args[1]);
         if (target == null) {
-            player.sendMessage(Component.text("Player not found or offline.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.player_not_found_offline", NamedTextColor.RED));
             return true;
         }
         long amount;
@@ -542,21 +656,26 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             amount = Long.parseLong(args[2]);
             if (amount <= 0) throw new NumberFormatException();
         } catch (NumberFormatException e) {
-            player.sendMessage(Component.text("Invalid amount.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
         plugin.getEconomy().add(target.getUniqueId(), -amount);
         plugin.syncBalance(target);
-        player.sendMessage(Component.text("Removed " + amount + " from player " + target.getName()).color(NamedTextColor.GREEN));
-        target.sendMessage(Component.text("Balance decreased by " + amount).color(NamedTextColor.GREEN));
+        plugin.sendMessage(player, plugin.trc("admin.take.done_sender", NamedTextColor.GREEN, amount, target.getName()));
+        plugin.sendMessage(target, plugin.trc("admin.take.done_target", NamedTextColor.GREEN, amount));
         return true;
     }
 
     private boolean handleTrade(Player player, String[] args) {
+        if (!plugin.isTradeSupported()) {
+            plugin.sendMessage(player, plugin.trc("trade.error.folia_disabled", NamedTextColor.RED));
+            return true;
+        }
+
         TradeManager tradeManager = plugin.getTradeManager();
 
         if (args.length < 2) {
-            player.sendMessage(Component.text("Usage: /market trade <player> | accept | decline").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("command.usage.market_trade", NamedTextColor.RED));
             return true;
         }
 
@@ -575,11 +694,11 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         // /market trade <player> — send a request
         Player target = Bukkit.getPlayerExact(args[1]);
         if (target == null) {
-            player.sendMessage(Component.text("Player not found or offline.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("error.player_not_found_offline", NamedTextColor.RED));
             return true;
         }
         if (player.getUniqueId().equals(target.getUniqueId())) {
-            player.sendMessage(Component.text("You cannot trade with yourself.").color(NamedTextColor.RED));
+            plugin.sendMessage(player, plugin.trc("trade.error.self_trade", NamedTextColor.RED));
             return true;
         }
 
@@ -589,20 +708,20 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleCheckBalance(CommandSender sender, String[] args) {
         if (!sender.hasPermission("easytrading.admin")) {
-            sender.sendMessage(Component.text("No permission.").color(NamedTextColor.RED));
+            plugin.sendMessage(sender, plugin.trc("error.no_permission", NamedTextColor.RED));
             return true;
         }
         if (args.length < 1) {
-            sender.sendMessage(Component.text("Usage: /checkbalance <player>").color(NamedTextColor.RED));
+            plugin.sendMessage(sender, plugin.trc("command.usage.checkbalance", NamedTextColor.RED));
             return true;
         }
         Player target = Bukkit.getPlayerExact(args[0]);
         if (target == null) {
-            sender.sendMessage(Component.text("Player not found or offline.").color(NamedTextColor.RED));
+            plugin.sendMessage(sender, plugin.trc("error.player_not_found_offline", NamedTextColor.RED));
             return true;
         }
         long balance = plugin.getEconomy().get(target.getUniqueId());
-        sender.sendMessage(Component.text(target.getName() + " balance: " + balance).color(NamedTextColor.GREEN));
+        plugin.sendMessage(sender, plugin.trc("command.balance.other", NamedTextColor.GREEN, target.getName(), balance));
         return true;
     }
 
@@ -616,6 +735,25 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             }
         }
         return sum;
+    }
+
+
+    private boolean validateListingPrice(Player player, long price) {
+        MarketConfig config = plugin.getMarketConfig();
+        config.ensureLoaded();
+        if (price < config.getMinPrice() || price > config.getMaxPrice()) {
+            plugin.sendMessage(player, plugin.trc("error.price_range", NamedTextColor.RED, config.getMinPrice(), config.getMaxPrice()));
+            return false;
+        }
+        return true;
+    }
+
+    private long parseListingPrice(String rawPrice) {
+        long price = Long.parseLong(rawPrice);
+        if (price <= 0) {
+            throw new NumberFormatException();
+        }
+        return price;
     }
 
     private void logTransfer(Player sender, Player target, long amount) {
@@ -640,12 +778,12 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
     }
 
     static int getMaxInsertable(Player player, ItemStack stack) {
-        if (stack == null || stack.isEmpty()) return 0;
+        if (stack == null || Items.isEmpty(stack)) return 0;
         int remaining = 0;
         int maxPerStack = stack.getMaxStackSize();
         for (int i = 0; i < 36; i++) {
             ItemStack slot = player.getInventory().getItem(i);
-            if (slot == null || slot.isEmpty()) {
+            if (slot == null || Items.isEmpty(slot)) {
                 remaining += maxPerStack;
             } else if (slot.isSimilar(stack)) {
                 remaining += maxPerStack - slot.getAmount();
@@ -655,7 +793,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
     }
 
     @Override
-    public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, String[] args) {
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (command.getName().equalsIgnoreCase("checkbalance")) {
             if (args.length == 1) {
                 return null; // default player names
@@ -665,7 +803,8 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(List.of(
-                    "sell", "sellto", "buyfrom", "send", "trade", "team", "history",
+                    "my", "seller", "search", "sell", "relist", "cancelall", "sellto", "buyfrom",
+                    "pur", "purchase", "send", "trade", "team", "history",
                     "limits", "balance", "hide", "show", "help"
             ));
             if (sender.hasPermission("easytrading.admin")) {
@@ -682,6 +821,15 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
                 return Arrays.stream(MarketBankConfig.BUY_SUGGESTIONS)
                         .filter(s -> s.startsWith(prefix)).toList();
             }
+            if (sub.equals("seller")) {
+                String prefix = args[1].toLowerCase(Locale.ROOT);
+                return plugin.getMarketData().getAllListingsSorted().stream()
+                        .map(listing -> plugin.resolveMarketSellerName(listing.seller))
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(prefix))
+                        .toList();
+            }
             if (sub.equals("send") || sub.equals("add") || sub.equals("take") || sub.equals("trade")) {
                 if (sub.equals("trade")) {
                     String prefix = args[1].toLowerCase();
@@ -694,8 +842,18 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
                 }
                 return null; // default player names
             }
+            if (sub.equals("relist") && sender instanceof Player player) {
+                String prefix = args[1].toLowerCase(Locale.ROOT);
+                return plugin.getMarketData().getListingsBySeller(player.getUniqueId()).stream()
+                        .map(listing -> String.valueOf(listing.id))
+                        .filter(id -> id.startsWith(prefix))
+                        .toList();
+            }
         }
 
         return List.of();
     }
 }
+
+
+

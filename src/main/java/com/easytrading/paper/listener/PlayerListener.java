@@ -3,7 +3,7 @@ package com.easytrading.paper.listener;
 import com.easytrading.paper.EasyTradingPlugin;
 import com.easytrading.paper.gui.ConfirmationGui;
 import com.easytrading.paper.gui.MarketGui;
-import com.easytrading.paper.trade.TradeGui;
+import com.easytrading.paper.gui.PurchaseSetupGui;
 import com.easytrading.paper.trade.TradeManager;
 import com.easytrading.paper.trade.TradeSession;
 import org.bukkit.Bukkit;
@@ -15,6 +15,7 @@ import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -45,7 +46,7 @@ public class PlayerListener implements Listener {
                 event.setCancelled(true);
             } else if (isTopInventory && session.isPlayerSlot(player.getUniqueId(), event.getRawSlot())) {
                 // Player interacting with own trade slot — sync items after tick
-                Bukkit.getScheduler().runTask(plugin, session::syncItems);
+                plugin.getSchedulerAdapter().runPlayer(player, session::syncItems);
             } else if (!isTopInventory && event.isShiftClick()) {
                 // Shift-click from player inventory — block it (prevent complexity)
                 event.setCancelled(true);
@@ -66,6 +67,11 @@ public class PlayerListener implements Listener {
         if (marketGui != null && event.getInventory().equals(marketGui.getInventory())) {
             marketGui.handleClick(event);
             return;
+        }
+
+        PurchaseSetupGui purchaseSetupGui = plugin.getOpenPurchaseSetupGui(player);
+        if (purchaseSetupGui != null && event.getInventory().equals(purchaseSetupGui.getInventory())) {
+            purchaseSetupGui.handleClick(event);
         }
     }
 
@@ -89,7 +95,7 @@ public class PlayerListener implements Listener {
                 }
             }
             // Sync after tick if drag was in trade slots
-            Bukkit.getScheduler().runTask(plugin, session::syncItems);
+            plugin.getSchedulerAdapter().runPlayer(player, session::syncItems);
         }
     }
 
@@ -104,7 +110,7 @@ public class PlayerListener implements Listener {
                 && session.getGui() != null
                 && event.getInventory().equals(session.getGui().getInventory())) {
             // Delay to avoid issues with closeAll() during event
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.getSchedulerAdapter().runPlayer(player, () -> {
                 if (!session.isFinished()) {
                     session.cancelByPlayer(player.getUniqueId());
                 }
@@ -116,6 +122,11 @@ public class PlayerListener implements Listener {
         if (marketGui != null && event.getInventory().equals(marketGui.getInventory())) {
             marketGui.handleClose();
             plugin.removeMarketGui(player);
+        }
+
+        PurchaseSetupGui purchaseSetupGui = plugin.getOpenPurchaseSetupGui(player);
+        if (purchaseSetupGui != null && event.getInventory().equals(purchaseSetupGui.getInventory())) {
+            purchaseSetupGui.handleClose();
         }
 
         ConfirmationGui confirmGui = plugin.getOpenConfirmation(player);
@@ -145,4 +156,31 @@ public class PlayerListener implements Listener {
     public void onPlayerQuit(PlayerQuitEvent event) {
         plugin.onPlayerLogout(event.getPlayer());
     }
+
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onAsyncChat(AsyncPlayerChatEvent event) {
+        Player player = event.getPlayer();
+        if (plugin.hasPendingPurchaseBlockSearchPrompt(player)) {
+            event.setCancelled(true);
+            String message = event.getMessage();
+            plugin.getSchedulerAdapter().runPlayer(player, () -> plugin.handlePendingPurchaseBlockSearchPrompt(player, message));
+            return;
+        }
+
+        if (plugin.hasPendingPurchaseTotalPricePrompt(player)) {
+            event.setCancelled(true);
+            String message = event.getMessage();
+            plugin.getSchedulerAdapter().runPlayer(player, () -> plugin.handlePendingPurchasePricePrompt(player, message));
+            return;
+        }
+
+        if (!plugin.hasPendingMarketPrompt(player)) {
+            return;
+        }
+
+        event.setCancelled(true);
+        String message = event.getMessage();
+        plugin.getSchedulerAdapter().runPlayer(player, () -> plugin.handlePendingMarketPrompt(player, message));
+    }
 }
+

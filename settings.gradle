@@ -1,1 +1,3 @@
 rootProject.name = 'EasyTrading-Paper'
+include(':easy-trading-russificator')
+project(':easy-trading-russificator').projectDir = file('Easy Trading Russificator')

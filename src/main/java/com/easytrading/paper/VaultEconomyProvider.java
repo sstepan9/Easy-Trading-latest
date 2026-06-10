@@ -49,12 +49,12 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public String currencyNamePlural() {
-        return "coins";
+        return plugin.tr("vault.currency.plural");
     }
 
     @Override
     public String currencyNameSingular() {
-        return "coin";
+        return plugin.tr("vault.currency.singular");
     }
 
     // ── OfflinePlayer-based methods (primary) ──
@@ -92,11 +92,11 @@ public class VaultEconomyProvider implements Economy {
     @Override
     public EconomyResponse withdrawPlayer(OfflinePlayer player, double amount) {
         if (amount < 0) {
-            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE, "Cannot withdraw negative funds");
+            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE, plugin.tr("vault.error.withdraw_negative"));
         }
         double balance = getBalance(player);
         if (balance < amount) {
-            return new EconomyResponse(0, balance, EconomyResponse.ResponseType.FAILURE, "Insufficient funds");
+            return new EconomyResponse(0, balance, EconomyResponse.ResponseType.FAILURE, plugin.tr("vault.error.insufficient_funds"));
         }
         eco().add(player.getUniqueId(), -(long) amount);
         double newBalance = getBalance(player);
@@ -111,7 +111,7 @@ public class VaultEconomyProvider implements Economy {
     @Override
     public EconomyResponse depositPlayer(OfflinePlayer player, double amount) {
         if (amount < 0) {
-            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE, "Cannot deposit negative funds");
+            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE, plugin.tr("vault.error.deposit_negative"));
         }
         eco().add(player.getUniqueId(), (long) amount);
         double newBalance = getBalance(player);
@@ -212,57 +212,57 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public EconomyResponse createBank(String name, String player) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse createBank(String name, OfflinePlayer player) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse deleteBank(String name) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse bankBalance(String name) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse bankHas(String name, double amount) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse bankWithdraw(String name, double amount) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse bankDeposit(String name, double amount) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse isBankOwner(String name, String playerName) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse isBankOwner(String name, OfflinePlayer player) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse isBankMember(String name, String playerName) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override
     public EconomyResponse isBankMember(String name, OfflinePlayer player) {
-        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, "Banks not supported");
+        return new EconomyResponse(0, 0, EconomyResponse.ResponseType.NOT_IMPLEMENTED, plugin.tr("vault.error.banks_not_supported"));
     }
 
     @Override

@@ -1,5 +1,6 @@
 package com.easytrading.paper.trade;
 
+import com.easytrading.paper.util.AdventureSupport;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
@@ -38,10 +39,11 @@ public class TradeGui {
     }
 
     public void open() {
+        String title = session.getPlugin().tr("trade.gui.title", p1.getName(), p2.getName());
         inventory = Bukkit.createInventory(null, 54,
-                Component.text("Trade: " + p1.getName() + " ↔ " + p2.getName())
+                AdventureSupport.legacy(Component.text(title)
                         .color(NamedTextColor.DARK_GREEN)
-                        .decoration(TextDecoration.BOLD, true));
+                        .decoration(TextDecoration.BOLD, true)));
         refresh();
         p1.openInventory(inventory);
         p2.openInventory(inventory);
@@ -101,7 +103,7 @@ public class TradeGui {
     public void updateStatus(String text) {
         if (inventory == null) return;
         ItemStack status = createItem(Material.CLOCK, text, List.of(
-                Component.text("Both players confirmed").color(NamedTextColor.GRAY)
+                Component.text(session.getPlugin().tr("trade.gui.status.both_confirmed")).color(NamedTextColor.GRAY)
         ));
         inventory.setItem(TradeSession.STATUS_SLOT, status);
     }
@@ -126,10 +128,10 @@ public class TradeGui {
         String playerName = playerUuid.equals(player1) ? p1.getName() : p2.getName();
         ItemStack item = new ItemStack(Material.GOLD_NUGGET, Math.max(1, (int) Math.min(64, offered)));
         ItemMeta meta = item.getItemMeta();
-        meta.displayName(Component.text(playerName + "'s Money Offer").color(NamedTextColor.GOLD));
+        AdventureSupport.displayName(meta, Component.text(session.getPlugin().tr("trade.gui.money_offer", playerName)).color(NamedTextColor.GOLD));
         List<Component> lore = new ArrayList<>();
-        lore.add(Component.text("Offered: " + offered).color(NamedTextColor.YELLOW));
-        meta.lore(lore);
+        lore.add(Component.text(session.getPlugin().tr("trade.gui.money_offered", offered)).color(NamedTextColor.YELLOW));
+        AdventureSupport.lore(meta, lore);
         item.setItemMeta(meta);
         return item;
     }
@@ -139,27 +141,28 @@ public class TradeGui {
         String label = add ? "+10" : "-10";
         NamedTextColor color = add ? NamedTextColor.GREEN : NamedTextColor.RED;
         return createItem(mat, label, List.of(
-                Component.text(add ? "Add 10 to money offer" : "Remove 10 from money offer").color(NamedTextColor.GRAY)
+                Component.text(add ? session.getPlugin().tr("trade.gui.money_add") : session.getPlugin().tr("trade.gui.money_remove"))
+                        .color(NamedTextColor.GRAY)
         ), color);
     }
 
     private ItemStack createConfirmButton(UUID playerUuid) {
         boolean confirmed = session.isConfirmed(playerUuid);
         Material mat = confirmed ? Material.LIME_STAINED_GLASS_PANE : Material.GREEN_STAINED_GLASS_PANE;
-        String label = confirmed ? "✔ Confirmed" : "Confirm";
+        String label = confirmed ? session.getPlugin().tr("trade.gui.confirmed") : session.getPlugin().tr("gui.common.confirm");
         NamedTextColor color = confirmed ? NamedTextColor.GREEN : NamedTextColor.DARK_GREEN;
         List<Component> lore = new ArrayList<>();
         if (confirmed) {
-            lore.add(Component.text("Click to unconfirm").color(NamedTextColor.GRAY));
+            lore.add(Component.text(session.getPlugin().tr("trade.gui.unconfirm")).color(NamedTextColor.GRAY));
         } else {
-            lore.add(Component.text("Click to confirm the trade").color(NamedTextColor.GRAY));
+            lore.add(Component.text(session.getPlugin().tr("trade.gui.confirm_hint")).color(NamedTextColor.GRAY));
         }
         return createItem(mat, label, lore, color);
     }
 
     private ItemStack createCancelButton() {
-        return createItem(Material.RED_STAINED_GLASS_PANE, "Cancel Trade", List.of(
-                Component.text("Cancel and return items").color(NamedTextColor.GRAY)
+        return createItem(Material.RED_STAINED_GLASS_PANE, session.getPlugin().tr("trade.gui.cancel_trade"), List.of(
+                Component.text(session.getPlugin().tr("trade.gui.cancel_hint")).color(NamedTextColor.GRAY)
         ), NamedTextColor.RED);
     }
 
@@ -170,20 +173,22 @@ public class TradeGui {
         String statusText;
         Material mat;
         if (p1c && p2c) {
-            statusText = "Both confirmed!";
+            statusText = session.getPlugin().tr("trade.gui.status.both_confirmed_short");
             mat = Material.LIME_WOOL;
         } else if (p1c || p2c) {
             String who = p1c ? p1.getName() : p2.getName();
-            statusText = who + " confirmed";
+            statusText = session.getPlugin().tr("trade.gui.status.one_confirmed", who);
             mat = Material.YELLOW_WOOL;
         } else {
-            statusText = "Waiting for confirmations...";
+            statusText = session.getPlugin().tr("trade.gui.status.waiting");
             mat = Material.RED_WOOL;
         }
 
         List<Component> lore = new ArrayList<>();
-        lore.add(Component.text(p1.getName() + ": " + (p1c ? "✔" : "✘")).color(p1c ? NamedTextColor.GREEN : NamedTextColor.RED));
-        lore.add(Component.text(p2.getName() + ": " + (p2c ? "✔" : "✘")).color(p2c ? NamedTextColor.GREEN : NamedTextColor.RED));
+        lore.add(Component.text(session.getPlugin().tr("trade.gui.status.player_state", p1.getName(), p1c ? "✔" : "✘"))
+                .color(p1c ? NamedTextColor.GREEN : NamedTextColor.RED));
+        lore.add(Component.text(session.getPlugin().tr("trade.gui.status.player_state", p2.getName(), p2c ? "✔" : "✘"))
+                .color(p2c ? NamedTextColor.GREEN : NamedTextColor.RED));
 
         return createItem(mat, statusText, lore);
     }
@@ -195,9 +200,10 @@ public class TradeGui {
     private ItemStack createItem(Material material, String name, List<Component> lore, NamedTextColor color) {
         ItemStack item = new ItemStack(material, 1);
         ItemMeta meta = item.getItemMeta();
-        meta.displayName(Component.text(name).color(color).decoration(TextDecoration.ITALIC, false));
-        if (lore != null) meta.lore(lore);
+        AdventureSupport.displayName(meta, Component.text(name).color(color).decoration(TextDecoration.ITALIC, false));
+        if (lore != null) AdventureSupport.lore(meta, lore);
         item.setItemMeta(meta);
         return item;
     }
 }
+

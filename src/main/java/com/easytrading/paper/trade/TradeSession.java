@@ -4,6 +4,7 @@ import com.easytrading.paper.EasyTradingPlugin;
 import com.easytrading.paper.data.EconomyData;
 import com.easytrading.paper.data.TransactionHistoryData;
 import com.easytrading.paper.gui.MarketGui;
+import com.easytrading.paper.util.Items;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -95,6 +96,7 @@ public class TradeSession {
     public UUID getPlayer1() { return player1; }
     public UUID getPlayer2() { return player2; }
     public boolean isFinished() { return finished; }
+    public EasyTradingPlugin getPlugin() { return manager.getPlugin(); }
 
     public void openGui(Player p1, Player p2) {
         gui = new TradeGui(this, p1, p2);
@@ -129,7 +131,7 @@ public class TradeSession {
      */
     public void setItem(UUID playerUuid, int index, ItemStack item) {
         ItemStack[] items = playerUuid.equals(player1) ? player1Items : player2Items;
-        items[index] = item != null && !item.isEmpty() ? item.clone() : null;
+        items[index] = item != null && !Items.isEmpty(item) ? item.clone() : null;
         resetConfirmations();
         if (gui != null) gui.refresh();
     }
@@ -153,7 +155,7 @@ public class TradeSession {
         long toAdd = Math.min(amount, maxAdd);
         if (toAdd <= 0) {
             Player p = Bukkit.getPlayer(playerUuid);
-            if (p != null) p.sendMessage(Component.text("Not enough funds.").color(NamedTextColor.RED));
+            if (p != null) manager.getPlugin().sendMessage(p, manager.getPlugin().trc("error.not_enough_funds", NamedTextColor.RED));
             return;
         }
         if (playerUuid.equals(player1)) {
@@ -218,8 +220,8 @@ public class TradeSession {
         if (wasAnyConfirmed) {
             Player p1 = Bukkit.getPlayer(player1);
             Player p2 = Bukkit.getPlayer(player2);
-            if (p1 != null) p1.sendMessage(Component.text("Trade changed — confirmations reset.").color(NamedTextColor.YELLOW));
-            if (p2 != null) p2.sendMessage(Component.text("Trade changed — confirmations reset.").color(NamedTextColor.YELLOW));
+            if (p1 != null) manager.getPlugin().sendMessage(p1, manager.getPlugin().trc("trade.reset_confirmations", NamedTextColor.YELLOW));
+            if (p2 != null) manager.getPlugin().sendMessage(p2, manager.getPlugin().trc("trade.reset_confirmations", NamedTextColor.YELLOW));
         }
     }
 
@@ -248,10 +250,10 @@ public class TradeSession {
 
             Player cp1 = Bukkit.getPlayer(player1);
             Player cp2 = Bukkit.getPlayer(player2);
-            if (cp1 != null) cp1.sendMessage(Component.text("Trade completing in " + countdownSeconds + "...").color(NamedTextColor.GOLD));
-            if (cp2 != null) cp2.sendMessage(Component.text("Trade completing in " + countdownSeconds + "...").color(NamedTextColor.GOLD));
+            if (cp1 != null) manager.getPlugin().sendMessage(cp1, manager.getPlugin().trc("trade.completing_in", NamedTextColor.GOLD, countdownSeconds));
+            if (cp2 != null) manager.getPlugin().sendMessage(cp2, manager.getPlugin().trc("trade.completing_in", NamedTextColor.GOLD, countdownSeconds));
 
-            if (gui != null) gui.updateStatus("Trade in " + countdownSeconds + "s...");
+            if (gui != null) gui.updateStatus(manager.getPlugin().tr("trade.gui.status.countdown", countdownSeconds));
             countdownSeconds--;
         }, 0L, 20L).getTaskId();
     }
@@ -277,7 +279,7 @@ public class TradeSession {
         Player p2 = Bukkit.getPlayer(player2);
 
         if (p1 == null || !p1.isOnline() || p2 == null || !p2.isOnline()) {
-            cancelAndReturnItems("Player went offline");
+            cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.player_offline"));
             return;
         }
 
@@ -285,22 +287,22 @@ public class TradeSession {
 
         // Validate money balances
         if (player1Money > 0 && eco.get(player1) < player1Money) {
-            cancelAndReturnItems("Insufficient funds");
+            cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.insufficient_funds"));
             return;
         }
         if (player2Money > 0 && eco.get(player2) < player2Money) {
-            cancelAndReturnItems("Insufficient funds");
+            cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.insufficient_funds"));
             return;
         }
 
         // Collect non-null items
         List<ItemStack> p1Offer = new ArrayList<>();
         for (ItemStack item : player1Items) {
-            if (item != null && !item.isEmpty()) p1Offer.add(item.clone());
+            if (item != null && !Items.isEmpty(item)) p1Offer.add(item.clone());
         }
         List<ItemStack> p2Offer = new ArrayList<>();
         for (ItemStack item : player2Items) {
-            if (item != null && !item.isEmpty()) p2Offer.add(item.clone());
+            if (item != null && !Items.isEmpty(item)) p2Offer.add(item.clone());
         }
 
         // Transfer money
@@ -346,8 +348,8 @@ public class TradeSession {
         // Close GUIs and notify
         if (gui != null) gui.closeAll();
 
-        p1.sendMessage(Component.text("Trade completed successfully!").color(NamedTextColor.GREEN));
-        p2.sendMessage(Component.text("Trade completed successfully!").color(NamedTextColor.GREEN));
+        manager.getPlugin().sendMessage(p1, manager.getPlugin().trc("trade.completed", NamedTextColor.GREEN));
+        manager.getPlugin().sendMessage(p2, manager.getPlugin().trc("trade.completed", NamedTextColor.GREEN));
 
         manager.removeSession(this);
     }
@@ -364,7 +366,7 @@ public class TradeSession {
         // Return P1's items
         Player p1 = Bukkit.getPlayer(player1);
         for (ItemStack item : player1Items) {
-            if (item != null && !item.isEmpty()) {
+            if (item != null && !Items.isEmpty(item)) {
                 if (p1 != null && p1.isOnline()) {
                     Map<Integer, ItemStack> leftover = p1.getInventory().addItem(item.clone());
                     for (ItemStack left : leftover.values()) {
@@ -379,7 +381,7 @@ public class TradeSession {
         // Return P2's items
         Player p2 = Bukkit.getPlayer(player2);
         for (ItemStack item : player2Items) {
-            if (item != null && !item.isEmpty()) {
+            if (item != null && !Items.isEmpty(item)) {
                 if (p2 != null && p2.isOnline()) {
                     Map<Integer, ItemStack> leftover = p2.getInventory().addItem(item.clone());
                     for (ItemStack left : leftover.values()) {
@@ -393,10 +395,10 @@ public class TradeSession {
         if (gui != null) gui.closeAll();
 
         if (p1 != null && p1.isOnline()) {
-            p1.sendMessage(Component.text("Trade cancelled: " + reason).color(NamedTextColor.RED));
+            manager.getPlugin().sendMessage(p1, manager.getPlugin().trc("trade.cancelled", NamedTextColor.RED, reason));
         }
         if (p2 != null && p2.isOnline()) {
-            p2.sendMessage(Component.text("Trade cancelled: " + reason).color(NamedTextColor.RED));
+            manager.getPlugin().sendMessage(p2, manager.getPlugin().trc("trade.cancelled", NamedTextColor.RED, reason));
         }
 
         manager.removeSession(this);
@@ -407,8 +409,8 @@ public class TradeSession {
      */
     public void cancelByPlayer(UUID playerUuid) {
         Player who = Bukkit.getPlayer(playerUuid);
-        String name = who != null ? who.getName() : "Unknown";
-        cancelAndReturnItems(name + " cancelled the trade");
+        String name = who != null ? who.getName() : manager.getPlugin().tr("common.unknown");
+        cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.by_player", name));
     }
 
     /**
@@ -484,7 +486,7 @@ public class TradeSession {
             ItemStack guiItem = gui.getInventory().getItem(P1_SLOTS[i]);
             ItemStack stored = player1Items[i];
             if (!Objects.equals(guiItem, stored)) {
-                player1Items[i] = guiItem != null && !guiItem.isEmpty() ? guiItem.clone() : null;
+                player1Items[i] = guiItem != null && !Items.isEmpty(guiItem) ? guiItem.clone() : null;
                 changed = true;
             }
         }
@@ -492,7 +494,7 @@ public class TradeSession {
             ItemStack guiItem = gui.getInventory().getItem(P2_SLOTS[i]);
             ItemStack stored = player2Items[i];
             if (!Objects.equals(guiItem, stored)) {
-                player2Items[i] = guiItem != null && !guiItem.isEmpty() ? guiItem.clone() : null;
+                player2Items[i] = guiItem != null && !Items.isEmpty(guiItem) ? guiItem.clone() : null;
                 changed = true;
             }
         }
@@ -505,3 +507,4 @@ public class TradeSession {
 
     public TradeGui getGui() { return gui; }
 }
+

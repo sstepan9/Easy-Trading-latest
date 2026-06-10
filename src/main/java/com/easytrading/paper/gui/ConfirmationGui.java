@@ -1,6 +1,7 @@
 package com.easytrading.paper.gui;
 
 import com.easytrading.paper.EasyTradingPlugin;
+import com.easytrading.paper.util.AdventureSupport;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
@@ -20,7 +21,7 @@ import java.util.List;
  */
 public class ConfirmationGui {
     public enum Type {
-        SELL, BUY, BANK_SELL, BANK_BUY
+        SELL, BUY, BANK_SELL, BANK_BUY, PURCHASE_CREATE, SELL_TO_ORDER
     }
 
     private final EasyTradingPlugin plugin;
@@ -53,13 +54,15 @@ public class ConfirmationGui {
 
     public void open() {
         String title = switch (type) {
-            case SELL -> "Listing Confirmation";
-            case BUY -> "Purchase Confirmation";
-            case BANK_SELL -> "Sell to Bank";
-            case BANK_BUY -> "Buy from Bank";
+            case SELL -> plugin.tr("gui.confirm.title.sell");
+            case BUY -> plugin.tr("gui.confirm.title.buy");
+            case BANK_SELL -> plugin.tr("gui.confirm.title.bank_sell");
+            case BANK_BUY -> plugin.tr("gui.confirm.title.bank_buy");
+            case PURCHASE_CREATE -> plugin.tr("gui.confirm.title.purchase_create");
+            case SELL_TO_ORDER -> plugin.tr("gui.confirm.title.sell_to_order");
         };
         inventory = Bukkit.createInventory(null, 27,
-                Component.text(title).color(NamedTextColor.DARK_GREEN).decoration(TextDecoration.BOLD, true));
+                AdventureSupport.legacy(Component.text(title).color(NamedTextColor.DARK_GREEN).decoration(TextDecoration.BOLD, true)));
 
         // Info item (slot 4 = center of row 1)
         ItemStack infoItem = new ItemStack(Material.BOOK, 1);
@@ -68,52 +71,68 @@ public class ConfirmationGui {
 
         switch (type) {
             case SELL -> {
-                infoMeta.displayName(Component.text("Listing Confirmation").color(NamedTextColor.GOLD));
-                lore.add(Component.text("Item: " + itemName + " x" + count).color(NamedTextColor.WHITE));
-                lore.add(Component.text("Listing price: " + price).color(NamedTextColor.GOLD));
-                lore.add(Component.text("Fee: " + fee).color(NamedTextColor.RED));
-                lore.add(Component.text("After confirmation, the item will be removed").color(NamedTextColor.GRAY));
-                lore.add(Component.text("from your hand and listed on the market.").color(NamedTextColor.GRAY));
+                AdventureSupport.displayName(infoMeta, Component.text(plugin.tr("gui.confirm.sell.name")).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.item_line", itemName, count)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell.price", price)).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell.fee", fee)).color(NamedTextColor.RED));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell.line1")).color(NamedTextColor.GRAY));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell.line2")).color(NamedTextColor.GRAY));
             }
             case BUY -> {
-                infoMeta.displayName(Component.text("Purchase Confirmation").color(NamedTextColor.GOLD));
-                lore.add(Component.text("Item: " + itemName + " x" + count).color(NamedTextColor.WHITE));
-                lore.add(Component.text("Seller: " + sellerName).color(NamedTextColor.AQUA));
-                lore.add(Component.text("Cost: " + price).color(NamedTextColor.GOLD));
-                lore.add(Component.text("Press \"Confirm\" to complete the deal.").color(NamedTextColor.GRAY));
+                AdventureSupport.displayName(infoMeta, Component.text(plugin.tr("gui.confirm.buy.name")).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.item_line", itemName, count)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.buy.seller", sellerName)).color(NamedTextColor.AQUA));
+                lore.add(Component.text(plugin.tr("gui.confirm.buy.cost", price)).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.buy.line1")).color(NamedTextColor.GRAY));
             }
             case BANK_SELL -> {
-                infoMeta.displayName(Component.text("Sell to Bank").color(NamedTextColor.GOLD));
-                lore.add(Component.text("Resource: " + itemName).color(NamedTextColor.WHITE));
-                lore.add(Component.text("Requested: " + count).color(NamedTextColor.WHITE)); // using count for 'requested'
-                lore.add(Component.text("Will be processed: " + listingId).color(NamedTextColor.WHITE)); // using listingId for 'accepted'
-                lore.add(Component.text("Price per 1: " + price + " (tax " + taxPercent + "%)").color(NamedTextColor.GOLD));
-                lore.add(Component.text("Total: " + fee).color(NamedTextColor.GOLD)); // using fee for 'total'
+                AdventureSupport.displayName(infoMeta, Component.text(plugin.tr("gui.confirm.bank_sell.name")).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.resource", itemName)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.requested", count)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.accepted", listingId)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.price_tax", price, taxPercent)).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.total", fee)).color(NamedTextColor.GOLD));
             }
             case BANK_BUY -> {
-                infoMeta.displayName(Component.text("Buy from Bank").color(NamedTextColor.GOLD));
-                lore.add(Component.text("Resource: " + itemName).color(NamedTextColor.WHITE));
-                lore.add(Component.text("Requested: " + count).color(NamedTextColor.WHITE));
-                lore.add(Component.text("Will be processed: " + listingId).color(NamedTextColor.WHITE));
-                lore.add(Component.text("Price per 1: " + price + " (tax " + taxPercent + "%)").color(NamedTextColor.GOLD));
-                lore.add(Component.text("Total: " + fee).color(NamedTextColor.GOLD));
+                AdventureSupport.displayName(infoMeta, Component.text(plugin.tr("gui.confirm.bank_buy.name")).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.resource", itemName)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.requested", count)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.accepted", listingId)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.price_tax", price, taxPercent)).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.bank.total", fee)).color(NamedTextColor.GOLD));
+            }
+            case PURCHASE_CREATE -> {
+                AdventureSupport.displayName(infoMeta, Component.text(plugin.tr("gui.confirm.purchase_create.name")).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.item_line", itemName, count)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.purchase_create.total", price)).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.purchase_create.line1")).color(NamedTextColor.GRAY));
+                lore.add(Component.text(plugin.tr("gui.confirm.purchase_create.line2")).color(NamedTextColor.GRAY));
+            }
+            case SELL_TO_ORDER -> {
+                AdventureSupport.displayName(infoMeta, Component.text(plugin.tr("gui.confirm.sell_to_order.name")).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell_to_order.buyer", sellerName)).color(NamedTextColor.AQUA));
+                lore.add(Component.text(plugin.tr("gui.confirm.item_line", itemName, count)).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell_to_order.total", fee)).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell_to_order.receive", fee)).color(NamedTextColor.GOLD));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell_to_order.line1")).color(NamedTextColor.GRAY));
+                lore.add(Component.text(plugin.tr("gui.confirm.sell_to_order.line2")).color(NamedTextColor.GRAY));
             }
         }
-        infoMeta.lore(lore);
+        AdventureSupport.lore(infoMeta, lore);
         infoItem.setItemMeta(infoMeta);
         inventory.setItem(4, infoItem);
 
         // Confirm button (slot 11 = row 2, col 2)
         ItemStack confirmBtn = new ItemStack(Material.LIME_STAINED_GLASS_PANE, 1);
         ItemMeta confirmMeta = confirmBtn.getItemMeta();
-        confirmMeta.displayName(Component.text("Confirm").color(NamedTextColor.GREEN).decoration(TextDecoration.BOLD, true));
+        AdventureSupport.displayName(confirmMeta, Component.text(plugin.tr("gui.common.confirm")).color(NamedTextColor.GREEN).decoration(TextDecoration.BOLD, true));
         confirmBtn.setItemMeta(confirmMeta);
         inventory.setItem(11, confirmBtn);
 
         // Cancel button (slot 15 = row 2, col 6)
         ItemStack cancelBtn = new ItemStack(Material.RED_STAINED_GLASS_PANE, 1);
         ItemMeta cancelMeta = cancelBtn.getItemMeta();
-        cancelMeta.displayName(Component.text("Cancel").color(NamedTextColor.RED).decoration(TextDecoration.BOLD, true));
+        AdventureSupport.displayName(cancelMeta, Component.text(plugin.tr("gui.common.cancel")).color(NamedTextColor.RED).decoration(TextDecoration.BOLD, true));
         cancelBtn.setItemMeta(cancelMeta);
         inventory.setItem(15, cancelBtn);
 
@@ -130,6 +149,8 @@ public class ConfirmationGui {
                 case BUY -> plugin.handleBuyConfirm(player, true, listingId);
                 case BANK_SELL -> plugin.handleBankConfirm(player, true);
                 case BANK_BUY -> plugin.handleBankConfirm(player, true);
+                case PURCHASE_CREATE -> plugin.handlePurchaseOrderCreateConfirm(player, true);
+                case SELL_TO_ORDER -> plugin.handlePurchaseOrderSaleConfirm(player, true, listingId);
             }
         } else if (rawSlot == 15) {
             // Cancel
@@ -139,6 +160,8 @@ public class ConfirmationGui {
                 case BUY -> plugin.handleBuyConfirm(player, false, listingId);
                 case BANK_SELL -> plugin.handleBankConfirm(player, false);
                 case BANK_BUY -> plugin.handleBankConfirm(player, false);
+                case PURCHASE_CREATE -> plugin.handlePurchaseOrderCreateConfirm(player, false);
+                case SELL_TO_ORDER -> plugin.handlePurchaseOrderSaleConfirm(player, false, listingId);
             }
         }
     }
@@ -147,3 +170,4 @@ public class ConfirmationGui {
     public Player getPlayer() { return player; }
     public Type getType() { return type; }
 }
+
