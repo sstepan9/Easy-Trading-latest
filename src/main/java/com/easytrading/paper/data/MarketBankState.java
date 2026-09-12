@@ -26,7 +26,7 @@ public class MarketBankState {
         load();
     }
 
-    public void ensureToday() {
+    public synchronized void ensureToday() {
         String today = LocalDate.now().toString();
         if (!today.equals(date)) {
             date = today;
@@ -35,35 +35,35 @@ public class MarketBankState {
         }
     }
 
-    public void resetToday() {
+    public synchronized void resetToday() {
         date = LocalDate.now().toString();
         soldToday.clear();
         boughtToday.clear();
     }
 
-    public int getRemaining(UUID playerId, String itemId, int limit) {
+    public synchronized int getRemaining(UUID playerId, String itemId, int limit) {
         Map<String, Integer> items = soldToday.get(playerId);
         int sold = items == null ? 0 : items.getOrDefault(itemId, 0);
         return Math.max(0, limit - sold);
     }
 
-    public void addSold(UUID playerId, String itemId, int count) {
+    public synchronized void addSold(UUID playerId, String itemId, int count) {
         soldToday.computeIfAbsent(playerId, k -> new HashMap<>())
                 .merge(itemId, count, Integer::sum);
     }
 
-    public int getRemainingBuy(UUID playerId, String itemId, int limit) {
+    public synchronized int getRemainingBuy(UUID playerId, String itemId, int limit) {
         Map<String, Integer> items = boughtToday.get(playerId);
         int bought = items == null ? 0 : items.getOrDefault(itemId, 0);
         return Math.max(0, limit - bought);
     }
 
-    public void addBought(UUID playerId, String itemId, int count) {
+    public synchronized void addBought(UUID playerId, String itemId, int count) {
         boughtToday.computeIfAbsent(playerId, k -> new HashMap<>())
                 .merge(itemId, count, Integer::sum);
     }
 
-    public void load() {
+    public synchronized void load() {
         if (!Files.exists(file)) return;
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
@@ -76,7 +76,7 @@ public class MarketBankState {
         }
     }
 
-    public void save() {
+    public synchronized void save() {
         try {
             Files.createDirectories(file.getParent());
             JsonObject root = new JsonObject();

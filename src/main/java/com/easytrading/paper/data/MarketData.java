@@ -25,13 +25,19 @@ public class MarketData {
         public final ItemStack stack;
         public final long price;
         public final long createdAt;
+        public final boolean promoted;
 
         public Listing(int id, UUID seller, ItemStack stack, long price, long createdAt) {
+            this(id, seller, stack, price, createdAt, false);
+        }
+
+        public Listing(int id, UUID seller, ItemStack stack, long price, long createdAt, boolean promoted) {
             this.id = id;
             this.seller = seller;
             this.stack = stack;
             this.price = price;
             this.createdAt = createdAt;
+            this.promoted = promoted;
         }
     }
 
@@ -64,8 +70,12 @@ public class MarketData {
     }
 
     public synchronized Listing add(UUID seller, ItemStack stack, long price, long createdAt) {
+        return add(seller, stack, price, createdAt, false);
+    }
+
+    public synchronized Listing add(UUID seller, ItemStack stack, long price, long createdAt, boolean promoted) {
         int id = nextId++;
-        Listing l = new Listing(id, seller, stack.clone(), price, createdAt);
+        Listing l = new Listing(id, seller, stack.clone(), price, createdAt, promoted);
         listings.put(id, l);
         return l;
     }
@@ -111,7 +121,10 @@ public class MarketData {
 
     public synchronized List<Listing> getAllListingsSorted() {
         List<Listing> out = new ArrayList<>(listings.values());
-        out.sort(Comparator.comparingInt(a -> a.id));
+        // Promoted listings always form the first group. MarketGui applies the
+        // selected price/date ordering inside each of the two groups.
+        out.sort(Comparator.comparing((Listing listing) -> !listing.promoted)
+                .thenComparingInt(listing -> listing.id));
         return out;
     }
 
@@ -125,6 +138,16 @@ public class MarketData {
         int count = 0;
         for (Listing listing : listings.values()) {
             if (listing.seller.equals(seller)) count++;
+        }
+        return count;
+    }
+
+    public synchronized int countPromotedBySeller(UUID seller) {
+        int count = 0;
+        for (Listing listing : listings.values()) {
+            if (listing.promoted && listing.seller.equals(seller)) {
+                count++;
+            }
         }
         return count;
     }
@@ -188,7 +211,8 @@ public class MarketData {
         if (existing == null) {
             return Optional.empty();
         }
-        Listing updated = new Listing(existing.id, existing.seller, existing.stack.clone(), newPrice, relistedAt);
+        Listing updated = new Listing(existing.id, existing.seller, existing.stack.clone(), newPrice, relistedAt,
+                existing.promoted);
         listings.put(id, updated);
         return Optional.of(updated);
     }
@@ -202,7 +226,7 @@ public class MarketData {
     }
 
     @SuppressWarnings("deprecation")
-    public void load() {
+    public synchronized void load() {
         if (!Files.exists(file)) return;
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
@@ -220,10 +244,11 @@ public class MarketData {
                     UUID seller = UUID.fromString(obj.get("seller").getAsString());
                     long price = obj.get("price").getAsLong();
                     long createdAt = obj.has("createdAt") ? obj.get("createdAt").getAsLong() : 0L;
+                    boolean promoted = obj.has("promoted") && obj.get("promoted").getAsBoolean();
 
                     ItemStack stack = readItemStack(obj);
 
-                    Listing l = new Listing(id, seller, stack, price, createdAt);
+                    Listing l = new Listing(id, seller, stack, price, createdAt, promoted);
                     listings.put(id, l);
                 }
             }
@@ -286,7 +311,7 @@ public class MarketData {
         return new ItemStack(mat, Math.max(1, count));
     }
 
-    public void save() {
+    public synchronized void save() {
         try {
             Files.createDirectories(file.getParent());
             JsonObject root = new JsonObject();
@@ -300,6 +325,7 @@ public class MarketData {
                 obj.addProperty("seller", l.seller.toString());
                 obj.addProperty("price", l.price);
                 obj.addProperty("createdAt", l.createdAt);
+                obj.addProperty("promoted", l.promoted);
                 // Serialize full ItemStack as base64
                 byte[] bytes = Items.serialize(l.stack);
                 obj.addProperty("itemBytes", Base64.getEncoder().encodeToString(bytes));

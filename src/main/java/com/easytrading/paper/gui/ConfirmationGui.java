@@ -20,6 +20,10 @@ import java.util.List;
  * Uses a 3-row chest inventory with info item + confirm/cancel buttons.
  */
 public class ConfirmationGui {
+    private static final int CONFIRM_SLOT = 11;
+    private static final int PROMOTE_SLOT = 13;
+    private static final int CANCEL_SLOT = 15;
+
     public enum Type {
         SELL, BUY, BANK_SELL, BANK_BUY, PURCHASE_CREATE, SELL_TO_ORDER
     }
@@ -34,6 +38,7 @@ public class ConfirmationGui {
     private final long fee; // for SELL
     private final String sellerName; // for BUY
     private final int taxPercent; // for BANK
+    private boolean promoted;
 
     private Inventory inventory;
 
@@ -129,6 +134,10 @@ public class ConfirmationGui {
         confirmBtn.setItemMeta(confirmMeta);
         inventory.setItem(11, confirmBtn);
 
+        if (type == Type.SELL) {
+            renderPromotionButton();
+        }
+
         // Cancel button (slot 15 = row 2, col 6)
         ItemStack cancelBtn = new ItemStack(Material.RED_STAINED_GLASS_PANE, 1);
         ItemMeta cancelMeta = cancelBtn.getItemMeta();
@@ -141,22 +150,24 @@ public class ConfirmationGui {
     }
 
     public void handleClick(int rawSlot) {
-        if (rawSlot == 11) {
+        if (rawSlot == PROMOTE_SLOT && type == Type.SELL) {
+            togglePromotion();
+        } else if (rawSlot == CONFIRM_SLOT) {
             // Confirm
             player.closeInventory();
             switch (type) {
-                case SELL -> plugin.handleSellConfirm(player, true);
+                case SELL -> plugin.handleSellConfirm(player, true, promoted);
                 case BUY -> plugin.handleBuyConfirm(player, true, listingId);
                 case BANK_SELL -> plugin.handleBankConfirm(player, true);
                 case BANK_BUY -> plugin.handleBankConfirm(player, true);
                 case PURCHASE_CREATE -> plugin.handlePurchaseOrderCreateConfirm(player, true);
                 case SELL_TO_ORDER -> plugin.handlePurchaseOrderSaleConfirm(player, true, listingId);
             }
-        } else if (rawSlot == 15) {
+        } else if (rawSlot == CANCEL_SLOT) {
             // Cancel
             player.closeInventory();
             switch (type) {
-                case SELL -> plugin.handleSellConfirm(player, false);
+                case SELL -> plugin.handleSellConfirm(player, false, false);
                 case BUY -> plugin.handleBuyConfirm(player, false, listingId);
                 case BANK_SELL -> plugin.handleBankConfirm(player, false);
                 case BANK_BUY -> plugin.handleBankConfirm(player, false);
@@ -164,6 +175,49 @@ public class ConfirmationGui {
                 case SELL_TO_ORDER -> plugin.handlePurchaseOrderSaleConfirm(player, false, listingId);
             }
         }
+    }
+
+    private void togglePromotion() {
+        if (!promoted) {
+            plugin.getMarketConfig().ensureLoaded();
+            int used = plugin.getMarketData().countPromotedBySeller(player.getUniqueId());
+            int limit = plugin.getMarketConfig().getPromotedListingLimit();
+            if (used >= limit) {
+                plugin.sendMessage(player, plugin.trc("error.promoted_listing_limit", NamedTextColor.RED, limit));
+                return;
+            }
+        }
+
+        promoted = !promoted;
+        renderPromotionButton();
+    }
+
+    private void renderPromotionButton() {
+        long promotionFee = plugin.computePromotionFee(price);
+        long totalFee = fee + promotionFee;
+        ItemStack button = new ItemStack(promoted ? Material.NETHER_STAR : Material.FIREWORK_ROCKET, 1);
+        ItemMeta meta = button.getItemMeta();
+        AdventureSupport.displayName(meta, Component.text(plugin.tr(promoted
+                        ? "gui.confirm.promote.enabled"
+                        : "gui.confirm.promote.disabled"))
+                .color(promoted ? NamedTextColor.GREEN : NamedTextColor.YELLOW)
+                .decoration(TextDecoration.BOLD, true));
+
+        List<Component> lore = new ArrayList<>();
+        lore.add(Component.text(plugin.tr("gui.confirm.promote.fee",
+                plugin.getMarketConfig().getPromotionFeePercent(), promotionFee)).color(NamedTextColor.GOLD));
+        if (promoted) {
+            lore.add(Component.text(plugin.tr("gui.confirm.promote.total_fee", totalFee)).color(NamedTextColor.RED));
+        }
+        int used = plugin.getMarketData().countPromotedBySeller(player.getUniqueId());
+        lore.add(Component.text(plugin.tr("gui.confirm.promote.limit", used,
+                plugin.getMarketConfig().getPromotedListingLimit())).color(NamedTextColor.GRAY));
+        lore.add(Component.text(plugin.tr(promoted
+                ? "gui.confirm.promote.click_disable"
+                : "gui.confirm.promote.click_enable")).color(NamedTextColor.AQUA));
+        AdventureSupport.lore(meta, lore);
+        button.setItemMeta(meta);
+        inventory.setItem(PROMOTE_SLOT, button);
     }
 
     public Inventory getInventory() { return inventory; }

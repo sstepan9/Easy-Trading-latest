@@ -56,6 +56,7 @@ public class TransactionHistoryData {
                 case "BANK_BUY" -> localization.tr("history.bank_buy", time, itemName, count, Math.abs(amount));
                 case "BANK_SELL" -> localization.tr("history.bank_sell", time, itemName, count, amount);
                 case "FEE" -> localization.tr("history.fee", time, Math.abs(amount));
+                case "PROMOTION_FEE" -> localization.tr("history.promotion_fee", time, Math.abs(amount));
                 case "TRADE" -> localization.tr("history.trade", time, otherPlayer == null ? itemName : otherPlayer, count, sign, amount);
                 default -> localization.tr("history.default", time, action, sign, amount);
             };
@@ -83,7 +84,7 @@ public class TransactionHistoryData {
         return new ArrayList<>(list.subList(0, count));
     }
 
-    public void load() {
+    public synchronized void load() {
         if (!Files.exists(file)) return;
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
@@ -113,7 +114,7 @@ public class TransactionHistoryData {
         }
     }
 
-    public void save() {
+    public synchronized void save() {
         try {
             Files.createDirectories(file.getParent());
             JsonObject root = new JsonObject();

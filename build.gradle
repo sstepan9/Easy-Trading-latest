@@ -10,11 +10,13 @@ def mcVersion = project.findProperty('mc_version') ?: '1.21.x'
 def releasePeriod = project.findProperty('release_period') ?: new Date().format('MM.yy')
 def releaseIteration = project.findProperty('release_iteration') ?: '02'
 def modVersion = project.findProperty('mod_version') ?: "${mcVersion}-${releasePeriod}.${releaseIteration}"
-def platformTarget = (project.findProperty('platform_target') ?: 'spigot').toString().toLowerCase(Locale.ROOT)
+def platformTarget = (project.findProperty('platform_target') ?: 'universal').toString().toLowerCase(Locale.ROOT)
 version = modVersion
 
 base {
-    archivesName = platformTarget == 'folia' ? 'EasyTrading-Folia' : 'EasyTrading-Bukkit'
+    archivesName = platformTarget == 'folia'
+            ? 'EasyTrading-Folia'
+            : (platformTarget == 'universal' ? 'EasyTrading-Universal' : 'EasyTrading-Bukkit')
 }
 
 java {
@@ -59,7 +61,7 @@ processResources {
     filesMatching('plugin.yml') {
         expand(
                 version: project.version,
-                foliaSupported: platformTarget == 'folia'
+                foliaSupported: platformTarget == 'folia' || platformTarget == 'universal'
         )
     }
 }

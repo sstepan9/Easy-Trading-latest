@@ -38,7 +38,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             "command.help.6", "command.help.7", "command.help.8", "command.help.9", "command.help.10",
             "command.help.11", "command.help.12", "command.help.13", "command.help.14", "command.help.15",
             "command.help.16", "command.help.17", "command.help.18", "command.help.19", "command.help.20",
-            "command.help.21", "command.help.22"
+            "command.help.21", "command.help.22", "command.help.23"
     };
 
     public MarketCommand(EasyTradingPlugin plugin) {
@@ -86,6 +86,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             case "change" -> handleChange(player, args);
             case "add" -> handleAdd(player, args);
             case "take" -> handleTake(player, args);
+            case "ads" -> handleAds(player, args);
             default -> {
                 plugin.sendMessage(player, plugin.trc("command.unknown_subcommand", NamedTextColor.RED));
                 yield true;
@@ -475,10 +476,13 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         economy.add(player.getUniqueId(), -amount);
         economy.add(target.getUniqueId(), amount);
         plugin.syncBalance(player);
-        plugin.syncBalance(target);
 
         plugin.sendMessage(player, plugin.trc("command.send.done_sender", NamedTextColor.GREEN, amount, target.getName()));
-        plugin.sendMessage(target, plugin.trc("command.send.done_target", NamedTextColor.GREEN, amount, player.getName()));
+        plugin.getSchedulerAdapter().runPlayer(target, () -> {
+            plugin.syncBalance(target);
+            plugin.sendMessage(target, plugin.trc("command.send.done_target", NamedTextColor.GREEN,
+                    amount, player.getName()));
+        });
 
         logTransfer(player, target, amount);
 
@@ -608,6 +612,32 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleAds(Player player, String[] args) {
+        if (!player.hasPermission("easytrading.admin")) {
+            plugin.sendMessage(player, plugin.trc("error.no_permission", NamedTextColor.RED));
+            return true;
+        }
+        if (args.length < 2) {
+            plugin.sendMessage(player, plugin.trc("command.usage.market_ads", NamedTextColor.RED));
+            return true;
+        }
+
+        int limit;
+        try {
+            limit = Integer.parseInt(args[1]);
+            if (limit < 0) throw new NumberFormatException();
+        } catch (NumberFormatException e) {
+            plugin.sendMessage(player, plugin.trc("error.invalid_promoted_limit", NamedTextColor.RED));
+            return true;
+        }
+
+        MarketConfig config = plugin.getMarketConfig();
+        config.ensureLoaded();
+        config.setPromotedListingLimit(limit);
+        plugin.sendMessage(player, plugin.trc("admin.ads_limit_set", NamedTextColor.GREEN, limit));
+        return true;
+    }
+
     private boolean handleAdd(Player player, String[] args) {
         if (!player.hasPermission("easytrading.admin")) {
             plugin.sendMessage(player, plugin.trc("error.no_permission", NamedTextColor.RED));
@@ -631,9 +661,11 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         plugin.getEconomy().add(target.getUniqueId(), amount);
-        plugin.syncBalance(target);
         plugin.sendMessage(player, plugin.trc("admin.add.done_sender", NamedTextColor.GREEN, amount, target.getName()));
-        plugin.sendMessage(target, plugin.trc("admin.add.done_target", NamedTextColor.GREEN, amount));
+        plugin.getSchedulerAdapter().runPlayer(target, () -> {
+            plugin.syncBalance(target);
+            plugin.sendMessage(target, plugin.trc("admin.add.done_target", NamedTextColor.GREEN, amount));
+        });
         return true;
     }
 
@@ -660,9 +692,11 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         plugin.getEconomy().add(target.getUniqueId(), -amount);
-        plugin.syncBalance(target);
         plugin.sendMessage(player, plugin.trc("admin.take.done_sender", NamedTextColor.GREEN, amount, target.getName()));
-        plugin.sendMessage(target, plugin.trc("admin.take.done_target", NamedTextColor.GREEN, amount));
+        plugin.getSchedulerAdapter().runPlayer(target, () -> {
+            plugin.syncBalance(target);
+            plugin.sendMessage(target, plugin.trc("admin.take.done_target", NamedTextColor.GREEN, amount));
+        });
         return true;
     }
 
@@ -808,7 +842,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
                     "limits", "balance", "hide", "show", "help"
             ));
             if (sender.hasPermission("easytrading.admin")) {
-                subs.addAll(List.of("bankreload", "clearlimits", "change", "add", "take"));
+                subs.addAll(List.of("bankreload", "clearlimits", "change", "add", "take", "ads"));
             }
             String prefix = args[0].toLowerCase();
             return subs.stream().filter(s -> s.startsWith(prefix)).toList();

@@ -124,7 +124,8 @@ public class EasyTradingPlugin extends JavaPlugin {
         // Cleanup expired trade requests every 20 seconds (400 ticks)
         tradeCleanupTask = scheduler.runGlobalRepeating(() -> tradeManager.cleanupExpired(), 400L, 400L);
 
-        // Register Vault Economy provider
+        // Vault is a soft dependency. Do not load VaultEconomyProvider when the
+        // Vault API is absent, otherwise the JVM cannot resolve its Economy type.
         if (Bukkit.getPluginManager().getPlugin("Vault") != null) {
             vaultProvider = new VaultEconomyProvider(this);
             Bukkit.getServicesManager().register(Economy.class, vaultProvider, this, ServicePriority.Normal);
@@ -654,6 +655,36 @@ public class EasyTradingPlugin extends JavaPlugin {
         return Math.min(marketConfig.getFeeMax(), withMin);
     }
 
+    /** Calculates the one-time promoted listing fee, rounded up to whole coins. */
+    public long computePromotionFee(long price) {
+        marketConfig.ensureLoaded();
+        int percent = marketConfig.getPromotionFeePercent();
+        if (price <= 0 || percent <= 0) {
+            return 0L;
+        }
+        return (long) Math.ceil(price * percent / 100.0D);
+    }
+
+    /**
+     * Withdraws a market fee through Vault when available. EasyTrading owns the
+     * underlying economy, so servers without Vault use the same EconomyData
+     * storage directly and keep Vault an optional dependency.
+     */
+    private boolean withdrawMarketFee(Player player, long amount) {
+        if (amount < 0) {
+            return false;
+        }
+        if (vaultProvider != null) {
+            return vaultProvider.withdrawPlayer(player, amount).transactionSuccess();
+        }
+        UUID playerId = player.getUniqueId();
+        if (economy.get(playerId) < amount) {
+            return false;
+        }
+        economy.add(playerId, -amount);
+        return true;
+    }
+
     public int countMatchingRequestedItems(Player player, ItemStack requestedStack) {
         if (requestedStack == null || requestedStack.getType().isAir()) {
             return 0;
@@ -771,12 +802,15 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         Player buyerOnline = Bukkit.getPlayer(order.buyer);
         if (buyerOnline != null) {
-            sendMessage(buyerOnline, trc("purchase_order.buyer_filled", NamedTextColor.GREEN,
-                    MarketGui.getItemName(delivered), accepted, total));
-            deliverQueuedItems(buyerOnline);
-            if (marketDeliveries.has(order.buyer)) {
-                sendMessage(buyerOnline, trc("purchase_order.delivery_waiting", NamedTextColor.RED));
-            }
+            scheduler.runPlayer(buyerOnline, () -> {
+                if (!buyerOnline.isOnline()) return;
+                sendMessage(buyerOnline, trc("purchase_order.buyer_filled", NamedTextColor.GREEN,
+                        MarketGui.getItemName(delivered), accepted, total));
+                deliverQueuedItems(buyerOnline);
+                if (marketDeliveries.has(order.buyer)) {
+                    sendMessage(buyerOnline, trc("purchase_order.delivery_waiting", NamedTextColor.RED));
+                }
+            });
         }
 
         sendMessage(seller, trc("purchase_order.seller_filled", NamedTextColor.GREEN,
@@ -842,7 +876,7 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     // ── Trade Confirmation Handlers ──
 
-    public void handleSellConfirm(Player player, boolean confirmed) {
+    public void handleSellConfirm(Player player, boolean confirmed, boolean promoted) {
         PendingSale pending = pendingSales.remove(player.getUniqueId());
         if (pending == null) return;
 
@@ -857,8 +891,38 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        if (economy.get(player.getUniqueId()) < pending.fee) {
-            sendMessage(player, trc("error.not_enough_funds_fee", NamedTextColor.RED, pending.fee));
+        marketConfig.ensureLoaded();
+
+        // Repeat all mutable checks at confirmation time. The config or the
+        // player's active listings may have changed while the GUI was open.
+        int activeOffers = marketData.countOffersByOwner(player.getUniqueId());
+        if (activeOffers >= marketConfig.getHardListingCap()) {
+            sendMessage(player, trc("error.active_listing_limit", NamedTextColor.RED,
+                    marketConfig.getHardListingCap()));
+            return;
+        }
+
+        if (promoted && marketData.countPromotedBySeller(player.getUniqueId())
+                >= marketConfig.getPromotedListingLimit()) {
+            sendMessage(player, trc("error.promoted_listing_limit", NamedTextColor.RED,
+                    marketConfig.getPromotedListingLimit()));
+            return;
+        }
+
+        long promotionFee = promoted ? computePromotionFee(pending.price) : 0L;
+        long totalFee;
+        try {
+            totalFee = Math.addExact(pending.fee, promotionFee);
+        } catch (ArithmeticException e) {
+            sendMessage(player, trc("error.invalid_price", NamedTextColor.RED));
+            return;
+        }
+
+        // VaultEconomyProvider performs the balance check and withdrawal as one
+        // operation. The fee is intentionally not refunded when a listing expires
+        // or is cancelled.
+        if (!withdrawMarketFee(player, totalFee)) {
+            sendMessage(player, trc("error.not_enough_funds_fee", NamedTextColor.RED, totalFee));
             return;
         }
 
@@ -870,7 +934,8 @@ public class EasyTradingPlugin extends JavaPlugin {
             inHand.setAmount(inHand.getAmount() - removeCount);
         }
 
-        MarketData.Listing listing = marketData.add(player.getUniqueId(), pending.stack.clone(), pending.price, System.currentTimeMillis());
+        MarketData.Listing listing = marketData.add(player.getUniqueId(), pending.stack.clone(), pending.price,
+                System.currentTimeMillis(), promoted);
 
         MarketNotifyData notifyState = marketNotify;
         long version = notifyState.bump();
@@ -878,13 +943,23 @@ public class EasyTradingPlugin extends JavaPlugin {
             notifyState.markSeen(online.getUniqueId(), version);
         }
 
-        economy.add(player.getUniqueId(), -pending.fee);
-        sendMessage(player, trc("listing.created", NamedTextColor.GREEN, listing.id, pending.price, pending.fee));
+        sendMessage(player, trc("listing.created", NamedTextColor.GREEN, listing.id, pending.price, totalFee));
+        if (promoted) {
+            sendMessage(player, trc("listing.promoted", NamedTextColor.GOLD, promotionFee));
+        }
+
+        // Persist both sides immediately: promoted status and the burned fee.
+        marketData.save();
+        economy.save();
         refreshAllMarketGuis();
 
         if (pending.fee > 0) {
             transactionHistory.record(player.getUniqueId(), "FEE", MarketGui.getItemName(pending.stack),
                     pending.stack.getAmount(), -pending.fee, null);
+        }
+        if (promotionFee > 0) {
+            transactionHistory.record(player.getUniqueId(), "PROMOTION_FEE", MarketGui.getItemName(pending.stack),
+                    pending.stack.getAmount(), -promotionFee, null);
         }
     }
 
@@ -1108,7 +1183,12 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         Player sellerOnline = Bukkit.getPlayer(listing.seller);
         if (sellerOnline != null) {
-            sendMessage(sellerOnline, trc("listing.seller_notified", NamedTextColor.GREEN, itemName, count, listing.price));
+            scheduler.runPlayer(sellerOnline, () -> {
+                if (sellerOnline.isOnline()) {
+                    sendMessage(sellerOnline, trc("listing.seller_notified", NamedTextColor.GREEN,
+                            itemName, count, listing.price));
+                }
+            });
         }
 
         String sellerName = sellerOnline != null ? sellerOnline.getName() : listing.seller.toString();

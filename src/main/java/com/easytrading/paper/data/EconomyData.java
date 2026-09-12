@@ -11,10 +11,6 @@ import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Persistent player balance storage (UUID → long).
- * Saved as JSON in plugins/EasyTrading/economy.json.
- */
 public class EconomyData {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private final Map<UUID, Long> balances = new ConcurrentHashMap<>();
@@ -37,7 +33,7 @@ public class EconomyData {
         set(player, get(player) + delta);
     }
 
-    public void load() {
+    public synchronized void load() {
         if (!Files.exists(file)) return;
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
@@ -54,7 +50,7 @@ public class EconomyData {
         }
     }
 
-    public void save() {
+    public synchronized void save() {
         try {
             Files.createDirectories(file.getParent());
             JsonObject root = new JsonObject();

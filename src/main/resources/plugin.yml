@@ -13,7 +13,7 @@ softdepend:
 commands:
   market:
     description: Open the market or execute trading commands
-    usage: /market [my|seller|search|sell|pur|purchase|relist|cancelall|sellto|buyfrom|send|trade|team|history|limits|hide|show|balance|help|bankreload|clearlimits|change|add|take] [args...]
+    usage: /market [my|seller|search|sell|pur|purchase|relist|cancelall|sellto|buyfrom|send|trade|team|history|limits|hide|show|balance|help|bankreload|clearlimits|change|add|take|ads] [args...]
   checkbalance:
     description: Check another player's balance (OP only)
     usage: /checkbalance <player>
@@ -21,7 +21,7 @@ commands:
 
 permissions:
   easytrading.admin:
-    description: Allows admin commands (bankreload, clearlimits, change, add, take, checkbalance)
+    description: Allows admin commands (bankreload, clearlimits, change, add, take, ads, checkbalance)
     default: op
   easytrading.use:
     description: Allows basic market usage

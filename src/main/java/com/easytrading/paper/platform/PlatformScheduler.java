@@ -19,7 +19,9 @@ public final class PlatformScheduler {
 
     public PlatformScheduler(Plugin plugin) {
         this.plugin = plugin;
-        this.folia = hasMethod(Bukkit.getServer().getClass(), "getGlobalRegionScheduler");
+        // Paper also exposes Folia-compatible scheduler methods. The regionized
+        // server class is the official discriminator between Paper and Folia.
+        this.folia = hasClass("io.papermc.paper.threadedregions.RegionizedServer");
     }
 
     public boolean isFolia() {
@@ -70,13 +72,13 @@ public final class PlatformScheduler {
         return ignored -> task.run();
     }
 
-    private static boolean hasMethod(Class<?> type, String name) {
-        for (Method method : type.getMethods()) {
-            if (method.getName().equals(name)) {
-                return true;
-            }
+    private static boolean hasClass(String className) {
+        try {
+            Class.forName(className, false, PlatformScheduler.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
         }
-        return false;
     }
 
     private static Object invoke(Object target, String methodName, Object... args) {
@@ -87,7 +89,7 @@ public final class PlatformScheduler {
             }
             try {
                 return method.invoke(target, args);
-            } catch (ReflectiveOperationException ignored) {
+            } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
                 // Try the next overload.
             }
         }

@@ -81,7 +81,7 @@ public class MarketDeliveryData {
         return items != null && !items.isEmpty();
     }
 
-    public void load() {
+    public synchronized void load() {
         if (!Files.exists(file)) return;
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
@@ -118,7 +118,7 @@ public class MarketDeliveryData {
         }
     }
 
-    public void save() {
+    public synchronized void save() {
         try {
             Files.createDirectories(file.getParent());
             JsonObject root = new JsonObject();

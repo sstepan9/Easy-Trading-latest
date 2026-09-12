@@ -24,13 +24,13 @@ import java.util.*;
  */
 public class MarketBankConfig {
     public static class BankResource {
-        private int limit;
-        private long base;
-        private long target;
-        private long min;
-        private long max;
-        private long stock;
-        private long price;
+        private volatile int limit;
+        private volatile long base;
+        private volatile long target;
+        private volatile long min;
+        private volatile long max;
+        private volatile long stock;
+        private volatile long price;
 
         public BankResource(int limit, long base, long target, long min, long max, long stock, long price) {
             this.limit = limit; this.base = base; this.target = target;
@@ -78,17 +78,17 @@ public class MarketBankConfig {
         this.configPath = dataFolder.resolve("bank-config.json");
     }
 
-    public BankResource get(String itemId) {
+    public synchronized BankResource get(String itemId) {
         return resources.get(itemId);
     }
 
-    public Map<String, BankResource> getResources() {
-        return Collections.unmodifiableMap(resources);
+    public synchronized Map<String, BankResource> getResources() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(resources));
     }
 
-    public int getTaxPercent() { return taxPercent; }
+    public synchronized int getTaxPercent() { return taxPercent; }
 
-    public void setTaxPercent(int taxPercent) {
+    public synchronized void setTaxPercent(int taxPercent) {
         this.taxPercent = Math.max(0, taxPercent);
         save();
     }
@@ -115,16 +115,16 @@ public class MarketBankConfig {
         };
     }
 
-    public void ensureLoaded() {
+    public synchronized void ensureLoaded() {
         reloadIfChanged();
         ensureDailyRebalance();
     }
 
-    public void reload() {
+    public synchronized void reload() {
         load(true);
     }
 
-    private void reloadIfChanged() {
+    private synchronized void reloadIfChanged() {
         try {
             if (Files.exists(configPath)) {
                 long modified = Files.getLastModifiedTime(configPath).toMillis();
@@ -139,7 +139,7 @@ public class MarketBankConfig {
         }
     }
 
-    private void load(boolean createIfMissing) {
+    private synchronized void load(boolean createIfMissing) {
         if (!Files.exists(configPath)) {
             if (createIfMissing) writeDefault();
         }
@@ -184,7 +184,7 @@ public class MarketBankConfig {
         }
     }
 
-    private void writeDefault() {
+    private synchronized void writeDefault() {
         JsonObject root = new JsonObject();
         JsonObject res = new JsonObject();
         addDefault(res, "minecraft:coal", 256, 2);
@@ -226,25 +226,25 @@ public class MarketBankConfig {
         res.add(id, obj);
     }
 
-    public long getBuyPrice(String itemId) {
+    public synchronized long getBuyPrice(String itemId) {
         BankResource res = get(itemId);
         if (res == null) return 0L;
         return applyTaxUp(res.price(), taxPercent);
     }
 
-    public long getSellPrice(String itemId) {
+    public synchronized long getSellPrice(String itemId) {
         BankResource res = get(itemId);
         if (res == null) return 0L;
         return applyTaxDown(res.price(), taxPercent);
     }
 
-    public int getBuyLimit(BankResource resource) {
+    public synchronized int getBuyLimit(BankResource resource) {
         if (resource == null) return 0;
         long scaled = (long) resource.limit() * Math.max(1, buyLimitMultiplier);
         return (int) Math.min(Integer.MAX_VALUE, scaled);
     }
 
-    public void applyStockChange(String itemId, long delta) {
+    public synchronized void applyStockChange(String itemId, long delta) {
         BankResource res = resources.get(itemId);
         if (res == null) return;
         res.setStock(res.stock() + delta);
@@ -252,7 +252,7 @@ public class MarketBankConfig {
         save();
     }
 
-    public void ensureDailyRebalance() {
+    public synchronized void ensureDailyRebalance() {
         String today = LocalDate.now().toString();
         if (today.equals(lastRebalanceDate)) return;
         if (!resources.isEmpty()) {
@@ -305,7 +305,7 @@ public class MarketBankConfig {
         return Math.max(1, (long) Math.floor(value * (1.0 - taxPct / 100.0)));
     }
 
-    public void save() {
+    public synchronized void save() {
         JsonObject root = new JsonObject();
         root.addProperty("tax_percent", taxPercent);
         root.addProperty("price_elasticity", priceElasticity);
@@ -340,7 +340,7 @@ public class MarketBankConfig {
     }
 
     /** Build rates info for display */
-    public List<BankRateEntry> buildRatesList() {
+    public synchronized List<BankRateEntry> buildRatesList() {
         List<BankRateEntry> entries = new ArrayList<>();
         for (Map.Entry<String, BankResource> entry : resources.entrySet()) {
             BankResource res = entry.getValue();
@@ -356,7 +356,7 @@ public class MarketBankConfig {
 
     // ── Logging ──
 
-    public static void logTrade(
+    public static synchronized void logTrade(
             Path dataFolder, Player player, String action, String itemId, String itemName,
             int requested, int inHand, int accepted, long pricePerItem, long total,
             int limit, int remaining, long balanceBefore, long balanceAfter,

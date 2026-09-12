@@ -1,6 +1,7 @@
 package com.easytrading.paper.gui;
 
 import com.easytrading.paper.EasyTradingPlugin;
+import com.easytrading.paper.data.MarketBankConfig;
 import com.easytrading.paper.util.AdventureSupport;
 import com.easytrading.paper.data.MarketData;
 import net.kyori.adventure.text.Component;
@@ -206,6 +207,10 @@ public class MarketGui {
             ItemMeta meta = display.getItemMeta();
             if (meta != null) {
                 List<Component> lore = new ArrayList<>();
+                if (listing.promoted) {
+                    lore.add(Component.text(plugin.tr("gui.market.listing.promoted"))
+                            .color(NamedTextColor.GOLD).decoration(TextDecoration.BOLD, true));
+                }
                 lore.add(Component.text(plugin.tr("gui.market.listing.id", listing.id)).color(NamedTextColor.DARK_GRAY));
                 lore.add(Component.text(plugin.tr("gui.market.listing.price", listing.price)).color(NamedTextColor.GOLD));
                 if (listingCount > 1) {
@@ -309,7 +314,13 @@ public class MarketGui {
                     .thenComparingInt(listing -> listing.id)
                     .reversed();
         };
-        filtered.sort(comparator);
+        // Promotion is the primary key for every user-selectable sort mode.
+        // The selected price/date comparator only orders entries inside the
+        // promoted and regular groups.
+        Comparator<MarketData.Listing> promotedFirst = Comparator
+                .comparing((MarketData.Listing listing) -> !listing.promoted)
+                .thenComparing(comparator);
+        filtered.sort(promotedFirst);
         return filtered;
     }
 
@@ -423,12 +434,24 @@ public class MarketGui {
 
         ItemStack pageInfo = new ItemStack(Material.PAPER, Math.max(1, currentPage + 1));
         ItemMeta pageMeta = pageInfo.getItemMeta();
-        String modeName = viewOptions.displayMode() == DisplayMode.PURCHASING
-                ? plugin.tr("gui.market.mode.purchasing")
-                : plugin.tr("gui.market.mode.selling");
         AdventureSupport.displayName(pageMeta,
-                Component.text(plugin.tr("gui.market.page_info", modeName, currentPage + 1, totalPages, filteredCount, totalOffers))
-                        .color(NamedTextColor.WHITE));
+                Component.text(plugin.tr("gui.market.bank_rates.title", currentPage + 1, totalPages))
+                        .color(NamedTextColor.GOLD).decoration(TextDecoration.BOLD, true));
+        List<Component> pageLore = new ArrayList<>();
+        pageLore.add(Component.text(plugin.tr("gui.market.bank_rates.header")).color(NamedTextColor.YELLOW));
+        pageLore.add(Component.text(plugin.tr("gui.market.bank_rates.hint")).color(NamedTextColor.GRAY));
+        pageLore.add(Component.empty());
+        MarketBankConfig bankConfig = plugin.getBankConfig();
+        bankConfig.ensureLoaded();
+        List<MarketBankConfig.BankRateEntry> rates = new ArrayList<>(bankConfig.buildRatesList());
+        rates.sort(Comparator.comparing(entry -> MarketBankConfig.getDisplayName(entry.itemId()), String.CASE_INSENSITIVE_ORDER));
+        for (MarketBankConfig.BankRateEntry entry : rates) {
+            pageLore.add(Component.text(plugin.tr("gui.market.bank_rates.entry",
+                    MarketBankConfig.getDisplayName(entry.itemId()),
+                    entry.buyPrice(),
+                    entry.sellPrice())).color(NamedTextColor.WHITE));
+        }
+        AdventureSupport.lore(pageMeta, pageLore);
         pageInfo.setItemMeta(pageMeta);
         inventory.setItem(PAGE_SLOT, pageInfo);
 

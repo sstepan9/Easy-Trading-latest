@@ -24,20 +24,20 @@ public class MarketNotifyData {
         load();
     }
 
-    public long getVersion() { return marketVersion; }
+    public synchronized long getVersion() { return marketVersion; }
 
-    public Long getLastSeen(UUID player) { return lastSeen.get(player); }
+    public synchronized Long getLastSeen(UUID player) { return lastSeen.get(player); }
 
-    public void markSeen(UUID player, long version) {
+    public synchronized void markSeen(UUID player, long version) {
         lastSeen.put(player, version);
     }
 
-    public long bump() {
+    public synchronized long bump() {
         marketVersion++;
         return marketVersion;
     }
 
-    public void load() {
+    public synchronized void load() {
         if (!Files.exists(file)) return;
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
@@ -58,7 +58,7 @@ public class MarketNotifyData {
         }
     }
 
-    public void save() {
+    public synchronized void save() {
         try {
             Files.createDirectories(file.getParent());
             JsonObject root = new JsonObject();
