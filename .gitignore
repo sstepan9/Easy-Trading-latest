@@ -20,3 +20,7 @@ gradle/wrapper/gradle-wrapper.jar
 # OS
 Thumbs.db
 .DS_Store
+
+# Local scripts
+*.ps1
+*.cmd
