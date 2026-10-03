@@ -72,12 +72,15 @@ public class TransactionHistoryData {
     }
 
     public synchronized void record(UUID player, String action, String itemName, int count, long amount, String otherPlayer) {
+        if (player == null || action == null || action.isBlank()) return;
         LinkedList<Transaction> list = history.computeIfAbsent(player, k -> new LinkedList<>());
-        list.addFirst(new Transaction(action, itemName, count, amount, System.currentTimeMillis(), otherPlayer));
+        list.addFirst(new Transaction(action, itemName == null ? "" : itemName,
+                Math.max(0, count), amount, System.currentTimeMillis(), otherPlayer));
         while (list.size() > MAX_PER_PLAYER) list.removeLast();
     }
 
     public synchronized List<Transaction> getRecent(UUID player, int limit) {
+        if (player == null || limit <= 0) return List.of();
         LinkedList<Transaction> list = history.get(player);
         if (list == null || list.isEmpty()) return List.of();
         int count = Math.min(limit, list.size());
@@ -97,14 +100,18 @@ public class TransactionHistoryData {
                     LinkedList<Transaction> list = new LinkedList<>();
                     for (JsonElement el : arr) {
                         JsonObject obj = el.getAsJsonObject();
+                        String action = obj.get("action").getAsString();
+                        if (action.isBlank()) continue;
+                        int count = obj.has("count") ? Math.max(0, obj.get("count").getAsInt()) : 0;
                         list.add(new Transaction(
-                                obj.get("action").getAsString(),
+                                action,
                                 obj.has("itemName") ? obj.get("itemName").getAsString() : "",
-                                obj.has("count") ? obj.get("count").getAsInt() : 0,
+                                count,
                                 obj.get("amount").getAsLong(),
                                 obj.has("timestamp") ? obj.get("timestamp").getAsLong() : 0,
                                 obj.has("otherPlayer") ? obj.get("otherPlayer").getAsString() : ""
                         ));
+                        while (list.size() > MAX_PER_PLAYER) list.removeLast();
                     }
                     history.put(uuid, list);
                 } catch (Exception ignored) {}
@@ -132,8 +139,7 @@ public class TransactionHistoryData {
                 }
                 root.add(entry.getKey().toString(), arr);
             }
-            Files.writeString(file, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(file, GSON.toJson(root));
         } catch (IOException e) {
             e.printStackTrace();
         }

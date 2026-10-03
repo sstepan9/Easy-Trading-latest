@@ -25,6 +25,8 @@ import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -146,6 +148,14 @@ public class EasyTradingPlugin extends JavaPlugin {
         if (saveTask != null) saveTask.cancel();
         if (cleanupTask != null) cleanupTask.cancel();
         if (tradeCleanupTask != null) tradeCleanupTask.cancel();
+
+        // Trades hold real item stacks in virtual inventories. Return/queue
+        // every escrow before Bukkit tears down players and inventories, then
+        // persist the queue in saveAll below. Without this, a reload/shutdown
+        // could permanently destroy offered items.
+        if (tradeManager != null) {
+            tradeManager.shutdown();
+        }
         for (PlatformScheduler.TaskHandle handle : playerHudTasks.values()) {
             handle.cancel();
         }
@@ -646,11 +656,15 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public long computeFee(UUID seller, long price) {
         marketConfig.ensureLoaded();
+        if (price <= 0) {
+            return 0L;
+        }
         int count = marketData.countBySeller(seller);
         if (count < marketConfig.getFreeListingSlots()) return 0L;
         int overload = Math.max(0, count - marketConfig.getSoftListingCap() + 1);
-        int feePercent = marketConfig.getBaseFeePercent() + overload * marketConfig.getProgressiveFeePercent();
-        long rawFee = Math.round(price * feePercent / 100.0);
+        long feePercent = (long) marketConfig.getBaseFeePercent()
+                + (long) overload * marketConfig.getProgressiveFeePercent();
+        long rawFee = percentageAmount(price, feePercent, RoundingMode.HALF_UP);
         long withMin = Math.max(marketConfig.getFeeMin(), rawFee);
         return Math.min(marketConfig.getFeeMax(), withMin);
     }
@@ -662,7 +676,20 @@ public class EasyTradingPlugin extends JavaPlugin {
         if (price <= 0 || percent <= 0) {
             return 0L;
         }
-        return (long) Math.ceil(price * percent / 100.0D);
+        return percentageAmount(price, percent, RoundingMode.CEILING);
+    }
+
+    /** Calculate a positive percentage without floating-point overflow. */
+    private long percentageAmount(long value, long percent, RoundingMode roundingMode) {
+        if (value <= 0 || percent <= 0) {
+            return 0L;
+        }
+        BigDecimal result = BigDecimal.valueOf(value)
+                .multiply(BigDecimal.valueOf(percent))
+                .divide(BigDecimal.valueOf(100L), 0, roundingMode);
+        return result.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0
+                ? Long.MAX_VALUE
+                : result.longValue();
     }
 
     /**
@@ -677,12 +704,8 @@ public class EasyTradingPlugin extends JavaPlugin {
         if (vaultProvider != null) {
             return vaultProvider.withdrawPlayer(player, amount).transactionSuccess();
         }
-        UUID playerId = player.getUniqueId();
-        if (economy.get(playerId) < amount) {
-            return false;
-        }
-        economy.add(playerId, -amount);
-        return true;
+        return economy.tryWithdraw(player.getUniqueId(), amount)
+                == EconomyData.MutationResult.SUCCESS;
     }
 
     public int countMatchingRequestedItems(Player player, ItemStack requestedStack) {
@@ -712,15 +735,46 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
+        if (pending.stack == null || Items.isEmpty(pending.stack)
+                || pending.stack.getAmount() <= 0 || pending.totalPrice <= 0) {
+            sendMessage(player, trc("purchase_order.cannot_complete", NamedTextColor.RED));
+            return;
+        }
+
+        marketConfig.ensureLoaded();
+        if (pending.totalPrice < marketConfig.getMinPrice()
+                || pending.totalPrice > marketConfig.getMaxPrice()
+                || marketData.countOffersByOwner(player.getUniqueId()) >= marketConfig.getHardListingCap()) {
+            sendMessage(player, trc("error.market_offer_limit", NamedTextColor.RED,
+                    marketConfig.getHardListingCap()));
+            return;
+        }
+
         long balance = economy.get(player.getUniqueId());
         if (balance < pending.totalPrice) {
             sendMessage(player, trc("error.not_enough_funds_reserve", NamedTextColor.RED, pending.totalPrice));
             return;
         }
 
-        MarketData.PurchaseOrder order = marketData.addPurchaseOrder(player.getUniqueId(), pending.stack,
-                pending.totalPrice, System.currentTimeMillis());
-        economy.add(player.getUniqueId(), -order.totalPrice);
+        // Reserve the money atomically before publishing the order.  This
+        // closes the check-then-debit race with commands/Vault consumers.
+        EconomyData.MutationResult withdrawal = economy.tryWithdraw(player.getUniqueId(), pending.totalPrice);
+        if (withdrawal != EconomyData.MutationResult.SUCCESS) {
+            sendMessage(player, trc("error.not_enough_funds_reserve", NamedTextColor.RED, pending.totalPrice));
+            return;
+        }
+
+        MarketData.PurchaseOrder order;
+        try {
+            order = marketData.addPurchaseOrder(player.getUniqueId(), pending.stack,
+                    pending.totalPrice, System.currentTimeMillis());
+        } catch (RuntimeException ex) {
+            // Never burn a reservation if publishing the order fails.
+            economy.tryDeposit(player.getUniqueId(), pending.totalPrice);
+            getLogger().warning("Could not create purchase order: " + ex.getMessage());
+            sendMessage(player, trc("purchase_order.cannot_complete", NamedTextColor.RED));
+            return;
+        }
         transactionHistory.record(player.getUniqueId(), "PURCHASE_RESERVE", MarketGui.getItemName(order.stack),
                 order.stack.getAmount(), -order.totalPrice, null);
 
@@ -732,6 +786,9 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         sendMessage(player, trc("purchase_order.created", NamedTextColor.GREEN, order.id,
                 MarketGui.getItemName(order.stack), order.stack.getAmount(), order.totalPrice));
+        marketData.save();
+        economy.save();
+        transactionHistory.save();
         refreshAllMarketGuis();
     }
 
@@ -749,15 +806,30 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        refundPurchaseOrder(player, order);
+        if (refundPurchaseOrder(player, order)) {
+            marketData.save();
+            economy.save();
+            transactionHistory.save();
+        } else {
+            marketData.putBackPurchaseOrder(order);
+        }
     }
 
-    private void refundPurchaseOrder(Player player, MarketData.PurchaseOrder order) {
-        economy.add(player.getUniqueId(), order.totalPrice);
+    private boolean refundPurchaseOrder(Player player, MarketData.PurchaseOrder order) {
+        if (order == null || order.totalPrice <= 0) {
+            return false;
+        }
+        EconomyData.MutationResult deposit = economy.tryDeposit(player.getUniqueId(), order.totalPrice);
+        if (deposit != EconomyData.MutationResult.SUCCESS) {
+            sendMessage(player, trc("error.balance_overflow", NamedTextColor.RED));
+            getLogger().warning("Could not refund purchase order " + order.id + " to " + player.getUniqueId());
+            return false;
+        }
         transactionHistory.record(player.getUniqueId(), "PURCHASE_REFUND", MarketGui.getItemName(order.stack),
                 order.stack.getAmount(), order.totalPrice, null);
         sendMessage(player, trc("purchase_order.refunded", NamedTextColor.GREEN, order.totalPrice));
         refreshAllMarketGuis();
+        return true;
     }
 
     public void handlePurchaseOrderSaleConfirm(Player seller, boolean confirmed, int orderId) {
@@ -773,7 +845,16 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         MarketData.PurchaseOrder order = removedOpt.get();
         if (order.buyer.equals(seller.getUniqueId())) {
-            refundPurchaseOrder(seller, order);
+            if (!refundPurchaseOrder(seller, order)) {
+                marketData.putBackPurchaseOrder(order);
+            }
+            return;
+        }
+
+        if (order.stack == null || Items.isEmpty(order.stack) || order.stack.getAmount() <= 0
+                || order.totalPrice <= 0) {
+            marketData.putBackPurchaseOrder(order);
+            sendMessage(seller, trc("purchase_order.cannot_complete", NamedTextColor.RED));
             return;
         }
 
@@ -792,8 +873,27 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        removeMatchingItems(seller, order.stack, accepted);
-        economy.add(seller.getUniqueId(), total);
+        if (!economy.canDeposit(seller.getUniqueId(), total)) {
+            marketData.putBackPurchaseOrder(order);
+            sendMessage(seller, trc("error.balance_overflow", NamedTextColor.RED));
+            return;
+        }
+
+        if (!removeMatchingItems(seller, order.stack, accepted)) {
+            marketData.putBackPurchaseOrder(order);
+            sendMessage(seller, trc("purchase_order.need_matching_items", NamedTextColor.RED, accepted));
+            return;
+        }
+
+        EconomyData.MutationResult deposit = economy.tryDeposit(seller.getUniqueId(), total);
+        if (deposit != EconomyData.MutationResult.SUCCESS) {
+            // Restore the item and keep the reservation intact if a concurrent
+            // mutation made the credit impossible.
+            restoreMatchingItems(seller, order.stack, accepted);
+            marketData.putBackPurchaseOrder(order);
+            sendMessage(seller, trc("error.balance_overflow", NamedTextColor.RED));
+            return;
+        }
         marketData.addSale(total);
 
         ItemStack delivered = order.stack.clone();
@@ -821,6 +921,10 @@ public class EasyTradingPlugin extends JavaPlugin {
                 accepted, total, buyerName);
         transactionHistory.record(order.buyer, "PURCHASE_FILL", MarketGui.getItemName(delivered),
                 accepted, -total, seller.getName());
+        marketData.save();
+        economy.save();
+        marketDeliveries.save();
+        transactionHistory.save();
         refreshAllMarketGuis();
     }
 
@@ -844,19 +948,23 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
 
         marketDeliveries.set(player.getUniqueId(), remaining);
+        // Persist the reduced queue immediately; otherwise a crash before the
+        // periodic save can replay items that were already delivered.
+        marketDeliveries.save();
         if (deliveredAmount > 0) {
             sendMessage(player, trc("market.delivery.received", NamedTextColor.YELLOW, deliveredAmount));
         }
     }
 
-    private void removeMatchingItems(Player player, ItemStack requestedStack, int amount) {
+    private boolean removeMatchingItems(Player player, ItemStack requestedStack, int amount) {
         if (amount <= 0) {
-            return;
+            return false;
         }
 
         ItemStack probe = requestedStack.clone();
         probe.setAmount(1);
         int remaining = amount;
+        int removedTotal = 0;
         for (int slot = 0; slot < 36 && remaining > 0; slot++) {
             ItemStack item = player.getInventory().getItem(slot);
             if (item == null || item.getType().isAir() || !item.isSimilar(probe)) {
@@ -871,6 +979,36 @@ public class EasyTradingPlugin extends JavaPlugin {
                 item.setAmount(updated);
             }
             remaining -= removed;
+            removedTotal += removed;
+        }
+        if (remaining != 0 && removedTotal > 0) {
+            restoreMatchingItems(player, requestedStack, removedTotal);
+        }
+        return remaining == 0;
+    }
+
+    private void restoreMatchingItems(Player player, ItemStack requestedStack, int amount) {
+        if (amount <= 0 || requestedStack == null || Items.isEmpty(requestedStack)) {
+            return;
+        }
+        ItemStack restore = requestedStack.clone();
+        restore.setAmount(Math.min(amount, restore.getMaxStackSize()));
+        int remaining = amount;
+        while (remaining > 0) {
+            int chunk = Math.min(remaining, restore.getMaxStackSize());
+            restore.setAmount(chunk);
+            Map<Integer, ItemStack> leftover = player.getInventory().addItem(restore.clone());
+            for (ItemStack item : leftover.values()) {
+                player.getWorld().dropItemNaturally(player.getLocation(), item);
+            }
+            int left = 0;
+            for (ItemStack item : leftover.values()) {
+                left += item.getAmount();
+            }
+            remaining -= chunk - left;
+            if (chunk - left <= 0) {
+                break;
+            }
         }
     }
 
@@ -892,6 +1030,13 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
 
         marketConfig.ensureLoaded();
+
+        if (pending.price <= 0 || pending.price < marketConfig.getMinPrice()
+                || pending.price > marketConfig.getMaxPrice()
+                || Items.isEmpty(pending.stack) || pending.stack.getAmount() <= 0) {
+            sendMessage(player, trc("error.invalid_price", NamedTextColor.RED));
+            return;
+        }
 
         // Repeat all mutable checks at confirmation time. The config or the
         // player's active listings may have changed while the GUI was open.
@@ -926,7 +1071,9 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        // Remove item from hand
+        // Remove item from hand only after the fee was successfully charged.
+        // Keep a copy so an unexpected publication failure can restore it.
+        ItemStack originalHand = inHand.clone();
         int removeCount = pending.stack.getAmount();
         if (inHand.getAmount() == removeCount) {
             player.getInventory().setItemInMainHand(Items.empty());
@@ -934,8 +1081,23 @@ public class EasyTradingPlugin extends JavaPlugin {
             inHand.setAmount(inHand.getAmount() - removeCount);
         }
 
-        MarketData.Listing listing = marketData.add(player.getUniqueId(), pending.stack.clone(), pending.price,
-                System.currentTimeMillis(), promoted);
+        final MarketData.Listing listing;
+        try {
+            listing = marketData.add(player.getUniqueId(), pending.stack.clone(), pending.price,
+                    System.currentTimeMillis(), promoted);
+        } catch (RuntimeException ex) {
+            player.getInventory().setItemInMainHand(originalHand);
+            // The fee is burned on successful listing only; return it if the
+            // listing could not be created.
+            if (vaultProvider != null) {
+                vaultProvider.depositPlayer(player, totalFee);
+            } else {
+                economy.tryDeposit(player.getUniqueId(), totalFee);
+            }
+            getLogger().warning("Could not create listing: " + ex.getMessage());
+            sendMessage(player, trc("error.transaction_failed", NamedTextColor.RED));
+            return;
+        }
 
         MarketNotifyData notifyState = marketNotify;
         long version = notifyState.bump();
@@ -961,6 +1123,7 @@ public class EasyTradingPlugin extends JavaPlugin {
             transactionHistory.record(player.getUniqueId(), "PROMOTION_FEE", MarketGui.getItemName(pending.stack),
                     pending.stack.getAmount(), -promotionFee, null);
         }
+        transactionHistory.save();
     }
 
     public void handleBankConfirm(Player player, boolean confirmed) {
@@ -1021,17 +1184,43 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        long total = accepted * pending.price;
+        if (pending.price <= 0) {
+            sendMessage(player, trc("error.invalid_price", NamedTextColor.RED));
+            return;
+        }
+        final long total;
+        try {
+            total = Math.multiplyExact((long) accepted, pending.price);
+        } catch (ArithmeticException e) {
+            sendMessage(player, trc("error.invalid_price", NamedTextColor.RED));
+            return;
+        }
         long balanceBefore = economy.get(player.getUniqueId());
 
-        // Remove items from hand
+        if (!economy.canDeposit(player.getUniqueId(), total)) {
+            sendMessage(player, trc("error.balance_overflow", NamedTextColor.RED));
+            MarketBankConfig.logTrade(getDataFolder().toPath(), player, "sellto", pending.itemId, pending.itemName,
+                    pending.requested, available, 0, pending.price, 0L,
+                    resource.limit(), remaining, balanceBefore, balanceBefore,
+                    "REJECTED", "balance_overflow");
+            return;
+        }
+
+        // Debit the actual item stack only after the credit has been proven
+        // possible.  If the credit loses a race, restore the exact hand state.
+        ItemStack originalHand = inHand.clone();
         if (inHand.getAmount() <= accepted) {
             player.getInventory().setItemInMainHand(Items.empty());
         } else {
             inHand.setAmount(inHand.getAmount() - accepted);
         }
 
-        economy.add(player.getUniqueId(), total);
+        EconomyData.MutationResult deposit = economy.tryDeposit(player.getUniqueId(), total);
+        if (deposit != EconomyData.MutationResult.SUCCESS) {
+            player.getInventory().setItemInMainHand(originalHand);
+            sendMessage(player, trc("error.balance_overflow", NamedTextColor.RED));
+            return;
+        }
         long balanceAfter = economy.get(player.getUniqueId());
 
         bankState.addSold(player.getUniqueId(), pending.itemId, accepted);
@@ -1050,6 +1239,9 @@ public class EasyTradingPlugin extends JavaPlugin {
                 pending.requested, available, accepted, pending.price, total,
                 resource.limit(), bankState.getRemaining(player.getUniqueId(), pending.itemId, resource.limit()),
                 balanceBefore, balanceAfter, status, reason);
+        economy.save();
+        bankState.save();
+        transactionHistory.save();
     }
 
     private void handleBankBuy(Player player, PendingBankTrade pending, MarketBankConfig.BankResource resource) {
@@ -1062,6 +1254,20 @@ public class EasyTradingPlugin extends JavaPlugin {
                     buyLimit, remaining,
                     economy.get(player.getUniqueId()), economy.get(player.getUniqueId()),
                     "REJECTED", "limit_reached");
+            return;
+        }
+
+        if (pending.price <= 0) {
+            sendMessage(player, trc("error.invalid_price", NamedTextColor.RED));
+            return;
+        }
+
+        if (resource.stock() <= 0) {
+            sendMessage(player, trc("bank.out_of_stock", NamedTextColor.RED));
+            MarketBankConfig.logTrade(getDataFolder().toPath(), player, "buyfrom", pending.itemId, pending.itemName,
+                    pending.requested, 0, 0, pending.price, 0L,
+                    buyLimit, remaining, economy.get(player.getUniqueId()), economy.get(player.getUniqueId()),
+                    "REJECTED", "out_of_stock");
             return;
         }
 
@@ -1092,15 +1298,27 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        int accepted = Math.min(pending.accepted, Math.min(remaining, Math.min(affordable, space)));
+        int stockAvailable = (int) Math.min(Integer.MAX_VALUE, resource.stock());
+        int accepted = Math.min(pending.accepted,
+                Math.min(remaining, Math.min(Math.min(affordable, space), stockAvailable)));
         if (accepted <= 0) {
             sendMessage(player, trc("error.purchase_cannot_complete", NamedTextColor.RED));
             return;
         }
 
-        long total = accepted * pending.price;
+        final long total;
+        try {
+            total = Math.multiplyExact((long) accepted, pending.price);
+        } catch (ArithmeticException e) {
+            sendMessage(player, trc("error.invalid_price", NamedTextColor.RED));
+            return;
+        }
         long balanceBefore = economy.get(player.getUniqueId());
-        economy.add(player.getUniqueId(), -total);
+        EconomyData.MutationResult withdrawal = economy.tryWithdraw(player.getUniqueId(), total);
+        if (withdrawal != EconomyData.MutationResult.SUCCESS) {
+            sendMessage(player, trc("error.not_enough_funds", NamedTextColor.RED));
+            return;
+        }
         long balanceAfter = economy.get(player.getUniqueId());
 
         // Give items
@@ -1127,6 +1345,9 @@ public class EasyTradingPlugin extends JavaPlugin {
                 pending.requested, 0, accepted, pending.price, total,
                 buyLimit, bankState.getRemainingBuy(player.getUniqueId(), pending.itemId, buyLimit),
                 balanceBefore, balanceAfter, status, reason);
+        economy.save();
+        bankState.save();
+        transactionHistory.save();
     }
 
     public void handleBuyConfirm(Player player, boolean confirmed, int listingId) {
@@ -1139,15 +1360,25 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
 
         MarketData.Listing listing = removedOpt.get();
+        if (listing.stack == null || Items.isEmpty(listing.stack) || listing.stack.getAmount() <= 0
+                || listing.price <= 0) {
+            marketData.putBack(listing);
+            sendMessage(player, trc("error.transaction_failed", NamedTextColor.RED));
+            return;
+        }
         if (listing.seller.equals(player.getUniqueId())) {
             // Return item to seller
             Map<Integer, ItemStack> leftover = player.getInventory().addItem(listing.stack.clone());
             if (!leftover.isEmpty()) {
                 for (ItemStack item : leftover.values()) {
-                    player.getWorld().dropItemNaturally(player.getLocation(), item);
+                    // Keep cancellation items in the durable delivery queue
+                    // instead of dropping them into a potentially unsafe world.
+                    marketDeliveries.add(player.getUniqueId(), item);
                 }
             }
             sendMessage(player, trc("listing.removed_from_sale", NamedTextColor.GREEN));
+            marketData.save();
+            marketDeliveries.save();
             refreshAllMarketGuis();
             return;
         }
@@ -1165,15 +1396,28 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
+        // Transfer funds atomically before giving the item.  This validates
+        // both affordability and seller-side long overflow and prevents a
+        // partial debit/credit settlement.
+        EconomyData.MutationResult transfer = economy.tryTransfer(
+                player.getUniqueId(), listing.seller, listing.price);
+        if (transfer != EconomyData.MutationResult.SUCCESS) {
+            marketData.putBack(listing);
+            if (transfer == EconomyData.MutationResult.OVERFLOW) {
+                sendMessage(player, trc("error.balance_overflow", NamedTextColor.RED));
+            } else {
+                sendMessage(player, trc("error.not_enough_funds", NamedTextColor.RED));
+            }
+            return;
+        }
+
         Map<Integer, ItemStack> leftover = player.getInventory().addItem(listing.stack.clone());
         if (!leftover.isEmpty()) {
             for (ItemStack item : leftover.values()) {
-                player.getWorld().dropItemNaturally(player.getLocation(), item);
+                marketDeliveries.add(player.getUniqueId(), item);
             }
         }
 
-        economy.add(player.getUniqueId(), -listing.price);
-        economy.add(listing.seller, listing.price);
         marketData.addSale(listing.price);
 
         String itemName = MarketGui.getItemName(listing.stack);
@@ -1195,6 +1439,10 @@ public class EasyTradingPlugin extends JavaPlugin {
         transactionHistory.record(player.getUniqueId(), "BUY", itemName, count, -listing.price, sellerName);
         transactionHistory.record(listing.seller, "SELL_INCOME", itemName, count, listing.price, player.getName());
 
+        marketData.save();
+        economy.save();
+        marketDeliveries.save();
+        transactionHistory.save();
         refreshAllMarketGuis();
     }
 

@@ -44,7 +44,8 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public String format(double amount) {
-        return String.valueOf((long) amount);
+        Long normalized = normalizeAmount(amount);
+        return normalized == null ? String.valueOf(amount) : Long.toString(normalized);
     }
 
     @Override
@@ -61,17 +62,17 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public boolean hasAccount(OfflinePlayer player) {
-        return true;
+        return player != null;
     }
 
     @Override
     public boolean hasAccount(OfflinePlayer player, String worldName) {
-        return true;
+        return hasAccount(player);
     }
 
     @Override
     public double getBalance(OfflinePlayer player) {
-        return eco().get(player.getUniqueId());
+        return player == null ? 0D : eco().get(player.getUniqueId());
     }
 
     @Override
@@ -81,7 +82,8 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public boolean has(OfflinePlayer player, double amount) {
-        return getBalance(player) >= amount;
+        Long normalized = normalizeAmount(amount);
+        return player != null && normalized != null && getBalance(player) >= normalized;
     }
 
     @Override
@@ -91,16 +93,22 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public EconomyResponse withdrawPlayer(OfflinePlayer player, double amount) {
-        if (amount < 0) {
-            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE, plugin.tr("vault.error.withdraw_negative"));
-        }
+        if (player == null) return failure(0D, "vault.error.invalid_player");
+        Long normalized = normalizeAmount(amount);
         double balance = getBalance(player);
-        if (balance < amount) {
-            return new EconomyResponse(0, balance, EconomyResponse.ResponseType.FAILURE, plugin.tr("vault.error.insufficient_funds"));
+        if (normalized == null) {
+            return new EconomyResponse(0, balance, EconomyResponse.ResponseType.FAILURE,
+                    plugin.tr("vault.error.invalid_amount"));
         }
-        eco().add(player.getUniqueId(), -(long) amount);
-        double newBalance = getBalance(player);
-        return new EconomyResponse(amount, newBalance, EconomyResponse.ResponseType.SUCCESS, null);
+
+        EconomyData.MutationResult result = eco().tryWithdraw(player.getUniqueId(), normalized);
+        if (result != EconomyData.MutationResult.SUCCESS) {
+            String message = result == EconomyData.MutationResult.INSUFFICIENT_FUNDS
+                    ? plugin.tr("vault.error.insufficient_funds")
+                    : plugin.tr("vault.error.invalid_amount");
+            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE, message);
+        }
+        return new EconomyResponse(normalized, getBalance(player), EconomyResponse.ResponseType.SUCCESS, null);
     }
 
     @Override
@@ -110,12 +118,20 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public EconomyResponse depositPlayer(OfflinePlayer player, double amount) {
-        if (amount < 0) {
-            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE, plugin.tr("vault.error.deposit_negative"));
+        if (player == null) return failure(0D, "vault.error.invalid_player");
+        Long normalized = normalizeAmount(amount);
+        double balance = getBalance(player);
+        if (normalized == null) {
+            return new EconomyResponse(0, balance, EconomyResponse.ResponseType.FAILURE,
+                    plugin.tr("vault.error.invalid_amount"));
         }
-        eco().add(player.getUniqueId(), (long) amount);
-        double newBalance = getBalance(player);
-        return new EconomyResponse(amount, newBalance, EconomyResponse.ResponseType.SUCCESS, null);
+
+        EconomyData.MutationResult result = eco().tryDeposit(player.getUniqueId(), normalized);
+        if (result != EconomyData.MutationResult.SUCCESS) {
+            return new EconomyResponse(0, getBalance(player), EconomyResponse.ResponseType.FAILURE,
+                    plugin.tr("vault.error.balance_overflow"));
+        }
+        return new EconomyResponse(normalized, getBalance(player), EconomyResponse.ResponseType.SUCCESS, null);
     }
 
     @Override
@@ -125,12 +141,12 @@ public class VaultEconomyProvider implements Economy {
 
     @Override
     public boolean createPlayerAccount(OfflinePlayer player) {
-        return true;
+        return player != null;
     }
 
     @Override
     public boolean createPlayerAccount(OfflinePlayer player, String worldName) {
-        return true;
+        return createPlayerAccount(player);
     }
 
     // ── String-based methods (legacy, delegate to OfflinePlayer) ──
@@ -138,18 +154,19 @@ public class VaultEconomyProvider implements Economy {
     @Override
     @SuppressWarnings("deprecation")
     public boolean hasAccount(String playerName) {
-        return true;
+        return playerName != null && !playerName.isBlank();
     }
 
     @Override
     @SuppressWarnings("deprecation")
     public boolean hasAccount(String playerName, String worldName) {
-        return true;
+        return hasAccount(playerName);
     }
 
     @Override
     @SuppressWarnings("deprecation")
     public double getBalance(String playerName) {
+        if (playerName == null || playerName.isBlank()) return 0D;
         OfflinePlayer player = Bukkit.getOfflinePlayer(playerName);
         return getBalance(player);
     }
@@ -163,7 +180,8 @@ public class VaultEconomyProvider implements Economy {
     @Override
     @SuppressWarnings("deprecation")
     public boolean has(String playerName, double amount) {
-        return getBalance(playerName) >= amount;
+        if (playerName == null || playerName.isBlank()) return false;
+        return has(Bukkit.getOfflinePlayer(playerName), amount);
     }
 
     @Override
@@ -175,6 +193,7 @@ public class VaultEconomyProvider implements Economy {
     @Override
     @SuppressWarnings("deprecation")
     public EconomyResponse withdrawPlayer(String playerName, double amount) {
+        if (playerName == null || playerName.isBlank()) return failure(0D, "vault.error.invalid_player");
         return withdrawPlayer(Bukkit.getOfflinePlayer(playerName), amount);
     }
 
@@ -187,6 +206,7 @@ public class VaultEconomyProvider implements Economy {
     @Override
     @SuppressWarnings("deprecation")
     public EconomyResponse depositPlayer(String playerName, double amount) {
+        if (playerName == null || playerName.isBlank()) return failure(0D, "vault.error.invalid_player");
         return depositPlayer(Bukkit.getOfflinePlayer(playerName), amount);
     }
 
@@ -199,13 +219,13 @@ public class VaultEconomyProvider implements Economy {
     @Override
     @SuppressWarnings("deprecation")
     public boolean createPlayerAccount(String playerName) {
-        return true;
+        return playerName != null && !playerName.isBlank();
     }
 
     @Override
     @SuppressWarnings("deprecation")
     public boolean createPlayerAccount(String playerName, String worldName) {
-        return true;
+        return createPlayerAccount(playerName);
     }
 
     // ── Bank methods (not supported) ──
@@ -268,5 +288,29 @@ public class VaultEconomyProvider implements Economy {
     @Override
     public List<String> getBanks() {
         return Collections.emptyList();
+    }
+
+    /**
+     * EasyTrading stores whole coins in a signed long.  Vault exposes doubles,
+     * so accepting NaN/Infinity/fractions or silently narrowing a huge value
+     * would let integrations report a successful mutation for a different
+     * amount.  Reject anything that cannot be represented exactly enough for
+     * our integer economy.  Values at 2^63 and above are outside long range;
+     * the hexadecimal literal avoids the rounding of (double) Long.MAX_VALUE.
+     */
+    private static Long normalizeAmount(double amount) {
+        if (!Double.isFinite(amount) || amount < 0 || amount >= 0x1.0p63) {
+            return null;
+        }
+        long normalized = (long) amount;
+        if (normalized < 0 || (double) normalized != amount) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private EconomyResponse failure(double balance, String key) {
+        return new EconomyResponse(0, balance, EconomyResponse.ResponseType.FAILURE,
+                plugin.tr(key));
     }
 }

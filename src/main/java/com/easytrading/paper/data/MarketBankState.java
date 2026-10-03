@@ -44,23 +44,33 @@ public class MarketBankState {
     public synchronized int getRemaining(UUID playerId, String itemId, int limit) {
         Map<String, Integer> items = soldToday.get(playerId);
         int sold = items == null ? 0 : items.getOrDefault(itemId, 0);
-        return Math.max(0, limit - sold);
+        long remaining = (long) Math.max(0, limit) - Math.max(0, sold);
+        return (int) Math.max(0L, Math.min(Integer.MAX_VALUE, remaining));
     }
 
     public synchronized void addSold(UUID playerId, String itemId, int count) {
+        if (playerId == null || itemId == null || itemId.isBlank() || count <= 0) return;
         soldToday.computeIfAbsent(playerId, k -> new HashMap<>())
-                .merge(itemId, count, Integer::sum);
+                .merge(itemId, count, (oldValue, increment) -> {
+                    long sum = (long) Math.max(0, oldValue) + increment;
+                    return (int) Math.min(Integer.MAX_VALUE, sum);
+                });
     }
 
     public synchronized int getRemainingBuy(UUID playerId, String itemId, int limit) {
         Map<String, Integer> items = boughtToday.get(playerId);
         int bought = items == null ? 0 : items.getOrDefault(itemId, 0);
-        return Math.max(0, limit - bought);
+        long remaining = (long) Math.max(0, limit) - Math.max(0, bought);
+        return (int) Math.max(0L, Math.min(Integer.MAX_VALUE, remaining));
     }
 
     public synchronized void addBought(UUID playerId, String itemId, int count) {
+        if (playerId == null || itemId == null || itemId.isBlank() || count <= 0) return;
         boughtToday.computeIfAbsent(playerId, k -> new HashMap<>())
-                .merge(itemId, count, Integer::sum);
+                .merge(itemId, count, (oldValue, increment) -> {
+                    long sum = (long) Math.max(0, oldValue) + increment;
+                    return (int) Math.min(Integer.MAX_VALUE, sum);
+                });
     }
 
     public synchronized void load() {
@@ -83,8 +93,7 @@ public class MarketBankState {
             root.addProperty("date", date == null ? "" : date);
             root.add("sold", writeNested(soldToday));
             root.add("bought", writeNested(boughtToday));
-            Files.writeString(file, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(file, GSON.toJson(root));
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -98,7 +107,10 @@ public class MarketBankState {
                 JsonObject items = entry.getValue().getAsJsonObject();
                 Map<String, Integer> map = new HashMap<>();
                 for (Map.Entry<String, JsonElement> item : items.entrySet()) {
-                    map.put(item.getKey(), item.getValue().getAsInt());
+                    int count = item.getValue().getAsInt();
+                    if (count > 0) {
+                        map.put(item.getKey(), count);
+                    }
                 }
                 out.put(uuid, map);
             } catch (Exception ignored) {}

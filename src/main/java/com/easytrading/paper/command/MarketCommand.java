@@ -254,7 +254,11 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
         if (!validateListingPrice(player, newPrice)) return true;
 
-        plugin.getMarketData().relist(listingId, newPrice, System.currentTimeMillis());
+        if (plugin.getMarketData().relist(listingId, newPrice, System.currentTimeMillis()).isEmpty()) {
+            plugin.sendMessage(player, plugin.trc("listing.not_found", NamedTextColor.RED));
+            return true;
+        }
+        plugin.getMarketData().save();
         plugin.refreshAllMarketGuis();
         plugin.sendMessage(player, plugin.trc("listing.relisted", NamedTextColor.GREEN, listingId, newPrice));
         return true;
@@ -267,16 +271,17 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        int totalItems = 0;
+        long totalItems = 0L;
+        // Persist the removal before returning any item.  If the server stops
+        // during inventory delivery, a listing cannot reappear and duplicate
+        // the returned goods after restart.
+        plugin.getMarketData().save();
         for (MarketData.Listing listing : removed) {
-            totalItems += listing.stack.getAmount();
-            Map<Integer, ItemStack> leftover = player.getInventory().addItem(listing.stack.clone());
-            if (!leftover.isEmpty()) {
-                for (ItemStack item : leftover.values()) {
-                    player.getWorld().dropItemNaturally(player.getLocation(), item);
-                }
-            }
+            totalItems = Math.min(Long.MAX_VALUE, totalItems + Math.max(0, listing.stack.getAmount()));
+            plugin.getMarketDeliveries().add(player.getUniqueId(), listing.stack.clone());
         }
+        plugin.getMarketDeliveries().save();
+        plugin.deliverQueuedItems(player);
 
         plugin.refreshAllMarketGuis();
         plugin.sendMessage(player, plugin.trc("listing.cancel_all_done", NamedTextColor.GREEN, removed.size(), totalItems));
@@ -348,7 +353,17 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         }
 
         int accepted = Math.min(requested, remaining);
-        long total = accepted * sellPrice;
+        if (sellPrice <= 0) {
+            plugin.sendMessage(player, plugin.trc("error.invalid_price", NamedTextColor.RED));
+            return true;
+        }
+        long total;
+        try {
+            total = Math.multiplyExact((long) accepted, sellPrice);
+        } catch (ArithmeticException e) {
+            plugin.sendMessage(player, plugin.trc("error.invalid_price", NamedTextColor.RED));
+            return true;
+        }
 
         plugin.setPendingBank(player, new EasyTradingPlugin.PendingBankTrade(
                 "sellto", inHand.clone(), itemId, MarketGui.getItemName(inHand),
@@ -409,6 +424,11 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
+        if (resource.stock() <= 0) {
+            plugin.sendMessage(player, plugin.trc("bank.out_of_stock", NamedTextColor.RED));
+            return true;
+        }
+
         long price = bankConfig.getBuyPrice(resolved);
         long balance = plugin.getEconomy().get(player.getUniqueId());
         if (balance < price) {
@@ -428,8 +448,19 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        int accepted = Math.min(requested, Math.min(remaining, space));
-        long total = accepted * price;
+        int stockAvailable = (int) Math.min(Integer.MAX_VALUE, resource.stock());
+        int accepted = Math.min(requested, Math.min(remaining, Math.min(space, stockAvailable)));
+        if (price <= 0) {
+            plugin.sendMessage(player, plugin.trc("error.invalid_price", NamedTextColor.RED));
+            return true;
+        }
+        long total;
+        try {
+            total = Math.multiplyExact((long) accepted, price);
+        } catch (ArithmeticException e) {
+            plugin.sendMessage(player, plugin.trc("error.invalid_price", NamedTextColor.RED));
+            return true;
+        }
 
         String itemName = MarketGui.getItemName(new ItemStack(mat));
         plugin.setPendingBank(player, new EasyTradingPlugin.PendingBankTrade(
@@ -468,13 +499,15 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         }
 
         EconomyData economy = plugin.getEconomy();
-        if (economy.get(player.getUniqueId()) < amount) {
-            plugin.sendMessage(player, plugin.trc("error.not_enough_funds", NamedTextColor.RED));
+        EconomyData.MutationResult transfer = economy.tryTransfer(
+                player.getUniqueId(), target.getUniqueId(), amount);
+        if (transfer != EconomyData.MutationResult.SUCCESS) {
+            plugin.sendMessage(player, plugin.trc(
+                    transfer == EconomyData.MutationResult.OVERFLOW
+                            ? "error.balance_overflow" : "error.not_enough_funds",
+                    NamedTextColor.RED));
             return true;
         }
-
-        economy.add(player.getUniqueId(), -amount);
-        economy.add(target.getUniqueId(), amount);
         plugin.syncBalance(player);
 
         plugin.sendMessage(player, plugin.trc("command.send.done_sender", NamedTextColor.GREEN, amount, target.getName()));
@@ -485,6 +518,8 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         });
 
         logTransfer(player, target, amount);
+
+        economy.save();
 
         TransactionHistoryData history = plugin.getTransactionHistory();
         history.record(player.getUniqueId(), "SEND", "", 0, -amount, target.getName());
@@ -660,7 +695,12 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
-        plugin.getEconomy().add(target.getUniqueId(), amount);
+        EconomyData.MutationResult result = plugin.getEconomy().tryDeposit(target.getUniqueId(), amount);
+        if (result != EconomyData.MutationResult.SUCCESS) {
+            plugin.sendMessage(player, plugin.trc("error.balance_overflow", NamedTextColor.RED));
+            return true;
+        }
+        plugin.getEconomy().save();
         plugin.sendMessage(player, plugin.trc("admin.add.done_sender", NamedTextColor.GREEN, amount, target.getName()));
         plugin.getSchedulerAdapter().runPlayer(target, () -> {
             plugin.syncBalance(target);
@@ -691,7 +731,15 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             plugin.sendMessage(player, plugin.trc("error.invalid_amount", NamedTextColor.RED));
             return true;
         }
-        plugin.getEconomy().add(target.getUniqueId(), -amount);
+        EconomyData.MutationResult result = plugin.getEconomy().tryWithdraw(target.getUniqueId(), amount);
+        if (result != EconomyData.MutationResult.SUCCESS) {
+            plugin.sendMessage(player, plugin.trc(
+                    result == EconomyData.MutationResult.INSUFFICIENT_FUNDS
+                            ? "error.not_enough_funds" : "error.transaction_failed",
+                    NamedTextColor.RED));
+            return true;
+        }
+        plugin.getEconomy().save();
         plugin.sendMessage(player, plugin.trc("admin.take.done_sender", NamedTextColor.GREEN, amount, target.getName()));
         plugin.getSchedulerAdapter().runPlayer(target, () -> {
             plugin.syncBalance(target);
@@ -713,7 +761,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        String sub = args[1].toLowerCase();
+        String sub = args[1].trim().toLowerCase(Locale.ROOT);
 
         if (sub.equals("accept")) {
             tradeManager.acceptRequest(player);
@@ -765,7 +813,12 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         for (String entry : team.getEntries()) {
             Player online = Bukkit.getPlayerExact(entry);
             if (online != null) {
-                sum += economy.get(online.getUniqueId());
+                long balance = economy.get(online.getUniqueId());
+                if (balance > 0 && sum > Long.MAX_VALUE - balance) {
+                    sum = Long.MAX_VALUE;
+                } else {
+                    sum += balance;
+                }
             }
         }
         return sum;

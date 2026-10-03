@@ -44,6 +44,19 @@ dependencies {
     implementation 'net.kyori:adventure-text-serializer-legacy:4.17.0'
     implementation 'net.kyori:adventure-text-serializer-plain:4.17.0'
     implementation 'net.kyori:adventure-platform-bukkit:4.3.3'
+
+    // Keep the core trade/economy invariants executable without a server.
+    // JUnit is test-only and does not get bundled into the plugin jar.
+    testImplementation platform('org.junit:junit-bom:5.11.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    // EconomyData is deliberately server-independent, but its JSON persistence
+    // uses Gson supplied by the server API at runtime. Add it only to tests.
+    testRuntimeOnly 'com.google.code.gson:gson:2.11.0'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }
 
 tasks.withType(JavaCompile).configureEach {

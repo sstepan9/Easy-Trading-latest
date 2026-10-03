@@ -29,11 +29,12 @@ public class MarketNotifyData {
     public synchronized Long getLastSeen(UUID player) { return lastSeen.get(player); }
 
     public synchronized void markSeen(UUID player, long version) {
-        lastSeen.put(player, version);
+        if (player == null) return;
+        lastSeen.put(player, Math.max(0L, version));
     }
 
     public synchronized long bump() {
-        marketVersion++;
+        if (marketVersion < Long.MAX_VALUE) marketVersion++;
         return marketVersion;
     }
 
@@ -42,14 +43,14 @@ public class MarketNotifyData {
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
             JsonObject root = JsonParser.parseString(json).getAsJsonObject();
-            marketVersion = root.has("version") ? root.get("version").getAsLong() : 0L;
+            marketVersion = root.has("version") ? Math.max(0L, root.get("version").getAsLong()) : 0L;
             lastSeen.clear();
             if (root.has("lastSeen")) {
                 JsonObject map = root.getAsJsonObject("lastSeen");
                 for (Map.Entry<String, JsonElement> entry : map.entrySet()) {
                     try {
                         UUID uuid = UUID.fromString(entry.getKey());
-                        lastSeen.put(uuid, entry.getValue().getAsLong());
+                        lastSeen.put(uuid, Math.max(0L, entry.getValue().getAsLong()));
                     } catch (Exception ignored) {}
                 }
             }
@@ -68,8 +69,7 @@ public class MarketNotifyData {
                 map.addProperty(e.getKey().toString(), e.getValue());
             }
             root.add("lastSeen", map);
-            Files.writeString(file, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(file, GSON.toJson(root));
         } catch (IOException e) {
             e.printStackTrace();
         }

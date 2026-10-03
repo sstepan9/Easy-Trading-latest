@@ -146,8 +146,7 @@ public class MarketConfig {
         root.addProperty("promoted_listing_limit", promotedListingLimit);
         try {
             Files.createDirectories(configPath.getParent());
-            Files.writeString(configPath, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(configPath, GSON.toJson(root));
             lastModified = Files.getLastModifiedTime(configPath).toMillis();
         } catch (IOException e) {
             e.printStackTrace();

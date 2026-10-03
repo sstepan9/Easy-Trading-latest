@@ -40,13 +40,16 @@ public class PlayerListener implements Listener {
 
             boolean isTopInventory = event.getRawSlot() < event.getInventory().getSize();
             boolean shouldCancel = session.handleClick(player, event.getRawSlot(),
-                    event.getCursor(), event.getCurrentItem(), isTopInventory);
+                    event.getCursor(), event.getCurrentItem(), isTopInventory,
+                    event.getAction(), event.getClick());
 
             if (shouldCancel) {
                 event.setCancelled(true);
             } else if (isTopInventory && session.isPlayerSlot(player.getUniqueId(), event.getRawSlot())) {
-                // Player interacting with own trade slot — sync items after tick
-                plugin.getSchedulerAdapter().runPlayer(player, session::syncItems);
+                // Bukkit mutates the inventory after this event. Always defer
+                // the snapshot by one tick; runPlayer() may execute inline on
+                // Bukkit and would capture the pre-click contents.
+                plugin.getSchedulerAdapter().runPlayerLater(player, session::syncItems, 1L);
             } else if (!isTopInventory && event.isShiftClick()) {
                 // Shift-click from player inventory — block it (prevent complexity)
                 event.setCancelled(true);
@@ -94,8 +97,14 @@ public class PlayerListener implements Listener {
                     }
                 }
             }
-            // Sync after tick if drag was in trade slots
-            plugin.getSchedulerAdapter().runPlayer(player, session::syncItems);
+            boolean changedOffer = event.getRawSlots().stream()
+                    .anyMatch(slot -> slot < invSize && session.isPlayerSlot(player.getUniqueId(), slot));
+            if (changedOffer) {
+                // Invalidate confirmations before the drag is applied, then
+                // read the resulting offer slots on the next tick.
+                session.noteOfferInteraction(player.getUniqueId());
+                plugin.getSchedulerAdapter().runPlayerLater(player, session::syncItems, 1L);
+            }
         }
     }
 
@@ -110,11 +119,11 @@ public class PlayerListener implements Listener {
                 && session.getGui() != null
                 && event.getInventory().equals(session.getGui().getInventory())) {
             // Delay to avoid issues with closeAll() during event
-            plugin.getSchedulerAdapter().runPlayer(player, () -> {
+            plugin.getSchedulerAdapter().runPlayerLater(player, () -> {
                 if (!session.isFinished()) {
                     session.cancelByPlayer(player.getUniqueId());
                 }
-            });
+            }, 1L);
             return;
         }
 

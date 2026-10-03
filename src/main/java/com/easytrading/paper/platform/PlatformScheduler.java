@@ -68,6 +68,28 @@ public final class PlatformScheduler {
         invoke(scheduler, "run", plugin, consumer(task), NOOP);
     }
 
+    /**
+     * Run on the player's thread/region after the requested number of ticks.
+     * Unlike {@link #runPlayer(Player, Runnable)}, this method never executes
+     * inline on Bukkit's primary thread. That distinction is required for
+     * inventory listeners: Bukkit applies the click/drag only after the event
+     * handler returns.
+     */
+    public TaskHandle runPlayerLater(Player player, Runnable task, long delayTicks) {
+        if (player == null || task == null) {
+            return new TaskHandle(NOOP);
+        }
+        long safeDelay = Math.max(0L, delayTicks);
+        if (!folia) {
+            BukkitTask handle = Bukkit.getScheduler().runTaskLater(plugin, task, safeDelay);
+            return new TaskHandle(handle::cancel);
+        }
+
+        Object scheduler = invoke(player, "getScheduler");
+        Object handle = invoke(scheduler, "runDelayed", plugin, consumer(task), NOOP, safeDelay);
+        return new TaskHandle(() -> cancelReflective(handle));
+    }
+
     private Consumer<Object> consumer(Runnable task) {
         return ignored -> task.run();
     }

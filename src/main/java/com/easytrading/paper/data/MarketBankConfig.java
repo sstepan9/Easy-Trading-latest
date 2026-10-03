@@ -8,6 +8,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,8 +35,13 @@ public class MarketBankConfig {
         private volatile long price;
 
         public BankResource(int limit, long base, long target, long min, long max, long stock, long price) {
-            this.limit = limit; this.base = base; this.target = target;
-            this.min = min; this.max = max; this.stock = stock; this.price = price;
+            this.limit = Math.max(0, limit);
+            this.base = Math.max(1L, base);
+            this.target = Math.max(1L, target);
+            this.min = Math.max(1L, min);
+            this.max = Math.max(this.min, max);
+            this.stock = Math.max(0L, stock);
+            setPrice(price);
         }
 
         public int limit() { return limit; }
@@ -45,7 +52,9 @@ public class MarketBankConfig {
         public long stock() { return stock; }
         public long price() { return price; }
         public void setStock(long stock) { this.stock = Math.max(0, stock); }
-        public void setPrice(long price) { this.price = price; }
+        public void setPrice(long price) {
+            this.price = Math.max(min, Math.min(max, price));
+        }
     }
 
     public static final String[] BUY_SUGGESTIONS = {
@@ -89,7 +98,7 @@ public class MarketBankConfig {
     public synchronized int getTaxPercent() { return taxPercent; }
 
     public synchronized void setTaxPercent(int taxPercent) {
-        this.taxPercent = Math.max(0, taxPercent);
+        this.taxPercent = Math.max(0, Math.min(100, taxPercent));
         save();
     }
 
@@ -100,7 +109,7 @@ public class MarketBankConfig {
 
     public String resolveResourceId(String input) {
         if (input == null) return null;
-        String key = input.toLowerCase();
+        String key = input.trim().toLowerCase(Locale.ROOT);
         return switch (key) {
             case "coal", "minecraft:coal", "уголь" -> "minecraft:coal";
             case "redstone", "minecraft:redstone", "редстоун" -> "minecraft:redstone";
@@ -148,10 +157,10 @@ public class MarketBankConfig {
                 String json = Files.readString(configPath, StandardCharsets.UTF_8);
                 JsonObject root = JsonParser.parseString(json).getAsJsonObject();
 
-                if (root.has("tax_percent")) taxPercent = Math.max(0, root.get("tax_percent").getAsInt());
-                if (root.has("price_elasticity")) priceElasticity = Math.max(0.05, Math.min(3.0, root.get("price_elasticity").getAsDouble()));
-                if (root.has("min_factor")) minFactor = Math.max(0.05, Math.min(1.0, root.get("min_factor").getAsDouble()));
-                if (root.has("max_factor")) maxFactor = Math.max(1.01, root.get("max_factor").getAsDouble());
+                if (root.has("tax_percent")) taxPercent = Math.max(0, Math.min(100, root.get("tax_percent").getAsInt()));
+                if (root.has("price_elasticity")) priceElasticity = clampFinite(root.get("price_elasticity").getAsDouble(), 0.60, 0.05, 3.0);
+                if (root.has("min_factor")) minFactor = clampFinite(root.get("min_factor").getAsDouble(), 0.55, 0.05, 1.0);
+                if (root.has("max_factor")) maxFactor = clampFinite(root.get("max_factor").getAsDouble(), 2.10, 1.01, 1000.0);
                 if (root.has("max_step_percent")) maxStepPercent = Math.max(0, Math.min(100, root.get("max_step_percent").getAsInt()));
                 if (root.has("daily_stock_recovery_percent")) dailyStockRecoveryPercent = Math.max(0, Math.min(100, root.get("daily_stock_recovery_percent").getAsInt()));
                 if (root.has("buy_limit_multiplier")) buyLimitMultiplier = Math.max(1, root.get("buy_limit_multiplier").getAsInt());
@@ -161,21 +170,34 @@ public class MarketBankConfig {
                 maxFactor = Math.max(minFactor + 0.05, maxFactor);
                 buyLimitMultiplier = Math.max(1, buyLimitMultiplier);
 
-                JsonObject res = root.getAsJsonObject("resources");
+                JsonObject res = root.has("resources") && root.get("resources").isJsonObject()
+                        ? root.getAsJsonObject("resources") : new JsonObject();
                 resources.clear();
                 for (String rKey : res.keySet()) {
-                    JsonObject entry = res.getAsJsonObject(rKey);
-                    int limit = entry.get("limit").getAsInt();
-                    long base = entry.has("base") ? entry.get("base").getAsLong() : entry.get("price").getAsLong();
-                    long target = entry.has("target") ? entry.get("target").getAsLong() : limit;
-                    long rmin = entry.has("min") ? entry.get("min").getAsLong() : Math.max(1L, Math.round(base * minFactor));
-                    long rmax = entry.has("max") ? entry.get("max").getAsLong() : Math.max(rmin + 1, Math.round(base * maxFactor));
-                    long stock = entry.has("stock") ? entry.get("stock").getAsLong() : target;
-                    long price = entry.has("price") ? entry.get("price").getAsLong() : base;
-                    BankResource resObj = new BankResource(limit, base, target, rmin, rmax, stock, price);
-                    resObj.setPrice(Math.max(resObj.min(), Math.min(resObj.max(), price)));
-                    resObj.setPrice(computePrice(resObj, false));
-                    resources.put(rKey, resObj);
+                    try {
+                        JsonObject entry = res.getAsJsonObject(rKey);
+                        if (entry == null || rKey == null || rKey.isBlank() || !entry.has("limit")) continue;
+                        int limit = Math.max(0, entry.get("limit").getAsInt());
+                        long base = entry.has("base") ? entry.get("base").getAsLong()
+                                : (entry.has("price") ? entry.get("price").getAsLong() : 1L);
+                        base = Math.max(1L, base);
+                        long target = Math.max(1L, entry.has("target") ? entry.get("target").getAsLong() : limit);
+                        long rmin = entry.has("min") ? Math.max(1L, entry.get("min").getAsLong())
+                                : Math.max(1L, Math.round(base * minFactor));
+                        long minimumMax = rmin == Long.MAX_VALUE ? Long.MAX_VALUE : rmin + 1;
+                        long rmax = entry.has("max") ? Math.max(rmin, entry.get("max").getAsLong())
+                                : Math.max(minimumMax, Math.round(base * maxFactor));
+                        if (rmax < rmin) rmax = rmin;
+                        long stock = entry.has("stock") ? Math.max(0L, entry.get("stock").getAsLong()) : target;
+                        long price = entry.has("price") ? entry.get("price").getAsLong() : base;
+                        BankResource resObj = new BankResource(limit, base, target, rmin, rmax, stock, price);
+                        resObj.setPrice(Math.max(resObj.min(), Math.min(resObj.max(), price)));
+                        resObj.setPrice(computePrice(resObj, false));
+                        resources.put(rKey, resObj);
+                    } catch (RuntimeException ignored) {
+                        // Ignore only the malformed resource and keep valid
+                        // bank entries available.
+                    }
                 }
                 lastModified = Files.getLastModifiedTime(configPath).toMillis();
             } catch (Exception e) {
@@ -207,8 +229,7 @@ public class MarketBankConfig {
         root.add("resources", res);
         try {
             Files.createDirectories(configPath.getParent());
-            Files.writeString(configPath, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(configPath, GSON.toJson(root));
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -220,7 +241,8 @@ public class MarketBankConfig {
         obj.addProperty("base", base);
         obj.addProperty("target", limit);
         obj.addProperty("min", Math.max(1L, Math.round(base * minFactor)));
-        obj.addProperty("max", Math.max(Math.round(base * maxFactor), base + 1));
+        long minimumMax = base == Long.MAX_VALUE ? Long.MAX_VALUE : base + 1;
+        obj.addProperty("max", Math.max(Math.round(base * maxFactor), minimumMax));
         obj.addProperty("stock", limit);
         obj.addProperty("price", base);
         res.add(id, obj);
@@ -240,14 +262,23 @@ public class MarketBankConfig {
 
     public synchronized int getBuyLimit(BankResource resource) {
         if (resource == null) return 0;
-        long scaled = (long) resource.limit() * Math.max(1, buyLimitMultiplier);
+        long scaled = (long) Math.max(0, resource.limit()) * Math.max(1, buyLimitMultiplier);
         return (int) Math.min(Integer.MAX_VALUE, scaled);
     }
 
     public synchronized void applyStockChange(String itemId, long delta) {
         BankResource res = resources.get(itemId);
         if (res == null) return;
-        res.setStock(res.stock() + delta);
+        long current = Math.max(0L, res.stock());
+        long next;
+        if (delta > 0 && current > Long.MAX_VALUE - delta) {
+            next = Long.MAX_VALUE;
+        } else if (delta == Long.MIN_VALUE || (delta < 0 && current < -delta)) {
+            next = 0L;
+        } else {
+            next = current + delta;
+        }
+        res.setStock(next);
         res.setPrice(computePrice(res, true));
         save();
     }
@@ -273,7 +304,12 @@ public class MarketBankConfig {
             if (drift == 0L) continue;
             long recover = Math.round(Math.abs(drift) * (dailyStockRecoveryPercent / 100.0));
             if (recover <= 0L) recover = 1L;
-            long adjusted = stock + (drift > 0L ? recover : -recover);
+            long adjusted;
+            if (drift > 0L) {
+                adjusted = stock > Long.MAX_VALUE - recover ? Long.MAX_VALUE : stock + recover;
+            } else {
+                adjusted = stock < recover ? 0L : stock - recover;
+            }
             if (drift > 0L) adjusted = Math.min(target, adjusted);
             else adjusted = Math.max(target, adjusted);
             res.setStock(Math.max(1L, adjusted));
@@ -286,23 +322,46 @@ public class MarketBankConfig {
         double target = Math.max(1.0, res.target());
         double ratio = target / stock;
         double equilibrium = res.base() * Math.pow(ratio, priceElasticity);
+        if (!Double.isFinite(equilibrium)) {
+            equilibrium = equilibrium < 0 ? res.min() : res.max();
+        }
         double bounded = Math.max(res.min(), Math.min(res.max(), equilibrium));
-        if (!smooth) return Math.round(bounded);
+        if (!smooth) return clampRounded(bounded, res.min(), res.max());
 
         double current = Math.max(res.min(), Math.min(res.max(), res.price()));
         double maxStep = current * (maxStepPercent / 100.0);
         if (maxStep < 1.0) maxStep = 1.0;
         double delta = bounded - current;
         double limited = current + Math.max(-maxStep, Math.min(maxStep, delta));
-        return Math.round(Math.max(res.min(), Math.min(res.max(), limited)));
+        return clampRounded(Math.max(res.min(), Math.min(res.max(), limited)), res.min(), res.max());
+    }
+
+    private static long clampRounded(double value, long min, long max) {
+        if (!Double.isFinite(value)) return value < 0 ? min : max;
+        long rounded = Math.round(value);
+        return Math.max(min, Math.min(max, rounded));
+    }
+
+    private static double clampFinite(double value, double fallback, double min, double max) {
+        if (!Double.isFinite(value)) return fallback;
+        return Math.max(min, Math.min(max, value));
     }
 
     private long applyTaxUp(long value, int taxPct) {
-        return Math.max(1, (long) Math.ceil(value * (1.0 + taxPct / 100.0)));
+        if (value <= 0) return 1L;
+        BigDecimal result = BigDecimal.valueOf(value)
+                .multiply(BigDecimal.valueOf(100L + Math.max(0, taxPct)))
+                .divide(BigDecimal.valueOf(100L), 0, RoundingMode.CEILING);
+        return result.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0
+                ? Long.MAX_VALUE : Math.max(1L, result.longValue());
     }
 
     private long applyTaxDown(long value, int taxPct) {
-        return Math.max(1, (long) Math.floor(value * (1.0 - taxPct / 100.0)));
+        if (value <= 0) return 1L;
+        BigDecimal result = BigDecimal.valueOf(value)
+                .multiply(BigDecimal.valueOf(Math.max(0, 100 - taxPct)))
+                .divide(BigDecimal.valueOf(100L), 0, RoundingMode.FLOOR);
+        return Math.max(1L, result.longValue());
     }
 
     public synchronized void save() {
@@ -331,8 +390,7 @@ public class MarketBankConfig {
         root.add("resources", res);
         try {
             Files.createDirectories(configPath.getParent());
-            Files.writeString(configPath, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(configPath, GSON.toJson(root));
             lastModified = Files.getLastModifiedTime(configPath).toMillis();
         } catch (IOException e) {
             e.printStackTrace();
@@ -401,7 +459,8 @@ public class MarketBankConfig {
     /** Convert minecraft item id to Bukkit Material */
     public static Material toMaterial(String minecraftId) {
         // "minecraft:coal" -> "COAL", "minecraft:iron_ingot" -> "IRON_INGOT"
-        String name = minecraftId.replace("minecraft:", "").toUpperCase();
+        if (minecraftId == null || minecraftId.isBlank()) return null;
+        String name = minecraftId.replace("minecraft:", "").toUpperCase(Locale.ROOT);
         try {
             return Material.valueOf(name);
         } catch (IllegalArgumentException e) {

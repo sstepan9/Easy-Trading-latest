@@ -9,6 +9,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -27,6 +29,13 @@ public class TradeManager {
 
     private static final long REQUEST_TIMEOUT_MS = 60_000L; // 60 seconds
 
+    /*
+     * Do not use the short /market label for chat actions. Another plugin can
+     * register the same label, sending a click to the wrong command. Bukkit
+     * exposes the plugin-prefixed command as an unambiguous fallback.
+     */
+    private static final String TRADE_COMMAND_PREFIX = "/easytrading:market trade ";
+
     public TradeManager(EasyTradingPlugin plugin) {
         this.plugin = plugin;
     }
@@ -39,6 +48,10 @@ public class TradeManager {
      * Send a trade request from sender to target.
      */
     public void sendRequest(Player sender, Player target) {
+        if (sender == null || target == null || !sender.isOnline() || !target.isOnline()
+                || sender.getUniqueId().equals(target.getUniqueId())) {
+            return;
+        }
         UUID senderUuid = sender.getUniqueId();
         UUID targetUuid = target.getUniqueId();
 
@@ -80,12 +93,12 @@ public class TradeManager {
         Component acceptBtn = Component.text(plugin.tr("trade.request.accept"))
                 .color(NamedTextColor.GREEN)
                 .decorate(TextDecoration.BOLD)
-                .clickEvent(ClickEvent.runCommand("/market trade accept"));
+                .clickEvent(ClickEvent.runCommand(TRADE_COMMAND_PREFIX + "accept"));
 
         Component declineBtn = Component.text(plugin.tr("trade.request.decline"))
                 .color(NamedTextColor.RED)
                 .decorate(TextDecoration.BOLD)
-                .clickEvent(ClickEvent.runCommand("/market trade decline"));
+                .clickEvent(ClickEvent.runCommand(TRADE_COMMAND_PREFIX + "decline"));
 
         plugin.sendMessage(target, 
                 Component.text(plugin.tr("trade.request.incoming", sender.getName())).color(NamedTextColor.GOLD)
@@ -99,6 +112,9 @@ public class TradeManager {
      * Accept a pending trade request.
      */
     public void acceptRequest(Player target) {
+        if (target == null || !target.isOnline()) {
+            return;
+        }
         UUID targetUuid = target.getUniqueId();
         TradeRequest request = pendingRequests.remove(targetUuid);
 
@@ -131,6 +147,9 @@ public class TradeManager {
      * Decline a pending trade request.
      */
     public void declineRequest(Player target) {
+        if (target == null || !target.isOnline()) {
+            return;
+        }
         UUID targetUuid = target.getUniqueId();
         TradeRequest request = pendingRequests.remove(targetUuid);
 
@@ -151,11 +170,31 @@ public class TradeManager {
      * Start a trade session between two players.
      */
     private void startSession(Player player1, Player player2) {
+        if (player1 == null || player2 == null || !player1.isOnline() || !player2.isOnline()
+                || player1.getUniqueId().equals(player2.getUniqueId())) {
+            return;
+        }
         TradeSession session = new TradeSession(this, player1.getUniqueId(), player2.getUniqueId());
-        activeSessions.put(player1.getUniqueId(), session);
-        activeSessions.put(player2.getUniqueId(), session);
+        UUID first = player1.getUniqueId();
+        UUID second = player2.getUniqueId();
 
-        session.openGui(player1, player2);
+        // putIfAbsent makes the check-and-register operation safe even if a
+        // command/plugin callback races this method.
+        if (activeSessions.putIfAbsent(first, session) != null) {
+            return;
+        }
+        if (activeSessions.putIfAbsent(second, session) != null) {
+            activeSessions.remove(first, session);
+            return;
+        }
+
+        try {
+            session.openGui(player1, player2);
+        } catch (RuntimeException openFailure) {
+            activeSessions.remove(first, session);
+            activeSessions.remove(second, session);
+            plugin.getLogger().warning("Could not open trade GUI: " + openFailure.getMessage());
+        }
     }
 
     /**
@@ -169,14 +208,35 @@ public class TradeManager {
      * End and remove a session (called by TradeSession when done).
      */
     public void removeSession(TradeSession session) {
-        activeSessions.remove(session.getPlayer1());
-        activeSessions.remove(session.getPlayer2());
+        if (session == null) {
+            return;
+        }
+        // Do not remove a newer session which reused one of these UUIDs while
+        // an old close/cancel callback was still pending.
+        activeSessions.remove(session.getPlayer1(), session);
+        activeSessions.remove(session.getPlayer2(), session);
+    }
+
+    /**
+     * Cancel every active session during plugin shutdown.  Distinct sessions
+     * are collected because each is indexed twice in activeSessions.
+     */
+    public void shutdown() {
+        Set<TradeSession> sessions = new HashSet<>(activeSessions.values());
+        pendingRequests.clear();
+        for (TradeSession session : sessions) {
+            session.cancelAndReturnItems(plugin.tr("trade.cancel.server_shutdown"));
+        }
+        activeSessions.clear();
     }
 
     /**
      * Handle player disconnect — cancel any pending requests and active sessions safely.
      */
     public void handleDisconnect(Player player) {
+        if (player == null) {
+            return;
+        }
         UUID uuid = player.getUniqueId();
 
         // Remove pending requests where player is sender or target
@@ -186,7 +246,7 @@ public class TradeManager {
         // Cancel active session
         TradeSession session = activeSessions.get(uuid);
         if (session != null) {
-            session.cancelAndReturnItems("Player disconnected");
+            session.cancelAndReturnItems(plugin.tr("trade.cancel.player_disconnected"));
         }
     }
 
@@ -194,10 +254,13 @@ public class TradeManager {
      * Handle player death — cancel active trade and return items.
      */
     public void handleDeath(Player player) {
+        if (player == null) {
+            return;
+        }
         UUID uuid = player.getUniqueId();
         TradeSession session = activeSessions.get(uuid);
         if (session != null) {
-            session.cancelAndReturnItems("Player died");
+            session.cancelAndReturnItems(plugin.tr("trade.cancel.player_died"));
         }
     }
 

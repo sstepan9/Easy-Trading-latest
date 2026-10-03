@@ -2,217 +2,199 @@ package com.easytrading.paper.trade;
 
 import com.easytrading.paper.EasyTradingPlugin;
 import com.easytrading.paper.data.EconomyData;
+import com.easytrading.paper.data.TradeAuditLog;
 import com.easytrading.paper.data.TransactionHistoryData;
-import com.easytrading.paper.gui.MarketGui;
 import com.easytrading.paper.util.Items;
-import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
+import org.bukkit.event.inventory.ClickType;
+import org.bukkit.event.inventory.InventoryAction;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Represents an active trade session between two players.
  *
- * GUI Layout (6 rows = 54 slots):
- *
- * Rows 0-1 (slots 0-8, 9-17):   Player1's offer area (left side slots 0-3, 9-12)
- *                                  Separator col 4 (slots 4, 13)
- *                                  Player2's offer area (right side slots 5-8, 14-17)
- * Rows 2-3 (slots 18-26, 27-35): More offer rows (same pattern)
- * Row 4 (slots 36-44):           Money offers + status display
- * Row 5 (slots 45-53):           Confirm/Cancel buttons
- *
- * Detailed slot mapping:
- * - Player1 item slots: 0-3, 9-12, 18-21, 27-30 (16 slots)
- * - Separator:          4, 13, 22, 31, 40 (glass pane)
- * - Player2 item slots: 5-8, 14-17, 23-26, 32-35 (16 slots)
- * - Row 4: slot 36=P1 money info, 37=P1 money+, 38=P1 money-, 40=separator, 41=P2 money-, 42=P2 money+, 43=P2 money info
- * - Row 5: slot 45=P1 confirm, 46=P1 cancel, 49=status, 52=P2 cancel, 53=P2 confirm
+ * <p>The GUI is an escrow container. It is treated as the source of truth
+ * whenever it exists; cached arrays are snapshots used to detect changes
+ * between confirmation and settlement. Bukkit applies an inventory click
+ * after the click event, so reading a cache synchronously from that event can
+ * otherwise omit the item just placed (or retain one just removed).</p>
  */
 public class TradeSession {
+
+    private enum State { OPEN, SETTLING, FINISHED }
+
+    private record OfferSnapshot(List<ItemStack> player1, List<ItemStack> player2) { }
 
     private final TradeManager manager;
     private final UUID player1;
     private final UUID player2;
-
-    // Items each player has placed in the trade
     private final ItemStack[] player1Items = new ItemStack[16];
     private final ItemStack[] player2Items = new ItemStack[16];
 
-    // Money each player offers
-    private long player1Money = 0;
-    private long player2Money = 0;
-
-    // Confirmation state
-    private boolean player1Confirmed = false;
-    private boolean player2Confirmed = false;
-
-    // Countdown task
+    private long player1Money;
+    private long player2Money;
+    private boolean player1Confirmed;
+    private boolean player2Confirmed;
     private int countdownTaskId = -1;
     private int countdownSeconds = -1;
-
-    // Whether the trade is completed or cancelled (prevent double execution)
-    private boolean finished = false;
-
-    // The GUI
+    /** Guarded by this; SETTLING prevents close/click callbacks racing commit. */
+    private State state = State.OPEN;
     private TradeGui gui;
 
-    // Player1's slots in the GUI
     static final int[] P1_SLOTS = {0, 1, 2, 3, 9, 10, 11, 12, 18, 19, 20, 21, 27, 28, 29, 30};
-    // Player2's slots in the GUI
     static final int[] P2_SLOTS = {5, 6, 7, 8, 14, 15, 16, 17, 23, 24, 25, 26, 32, 33, 34, 35};
-    // Separator slots
     static final int[] SEPARATOR_SLOTS = {4, 13, 22, 31, 40};
-
-    // Row 4: money controls
     static final int P1_MONEY_INFO = 36;
     static final int P1_MONEY_ADD = 37;
     static final int P1_MONEY_SUB = 38;
     static final int P2_MONEY_SUB = 41;
     static final int P2_MONEY_ADD = 42;
     static final int P2_MONEY_INFO = 43;
-
-    // Row 5: controls
     static final int P1_CONFIRM = 45;
     static final int P1_CANCEL = 47;
     static final int STATUS_SLOT = 49;
     static final int P2_CANCEL = 51;
     static final int P2_CONFIRM = 53;
 
-    // Money increment amounts
-    static final long[] MONEY_INCREMENTS = {1, 10, 100, 1000};
-
     public TradeSession(TradeManager manager, UUID player1, UUID player2) {
-        this.manager = manager;
-        this.player1 = player1;
-        this.player2 = player2;
-        Arrays.fill(player1Items, null);
-        Arrays.fill(player2Items, null);
+        this.manager = Objects.requireNonNull(manager, "manager");
+        this.player1 = Objects.requireNonNull(player1, "player1");
+        this.player2 = Objects.requireNonNull(player2, "player2");
     }
 
     public UUID getPlayer1() { return player1; }
     public UUID getPlayer2() { return player2; }
-    public boolean isFinished() { return finished; }
+
+    /** A session is terminal while it is settling as well as after completion. */
+    public synchronized boolean isFinished() { return state != State.OPEN; }
     public EasyTradingPlugin getPlugin() { return manager.getPlugin(); }
 
-    public void openGui(Player p1, Player p2) {
+    public synchronized void openGui(Player p1, Player p2) {
+        if (state != State.OPEN || p1 == null || p2 == null
+                || !isParticipant(p1.getUniqueId()) || !isParticipant(p2.getUniqueId())) return;
         gui = new TradeGui(this, p1, p2);
         gui.open();
     }
 
-    /**
-     * Determine if a slot belongs to the given player's offer area.
-     */
-    public boolean isPlayerSlot(UUID playerUuid, int rawSlot) {
+    private boolean isParticipant(UUID uuid) {
+        return uuid != null && (player1.equals(uuid) || player2.equals(uuid));
+    }
+
+    public synchronized boolean isPlayerSlot(UUID playerUuid, int rawSlot) {
+        if (!isParticipant(playerUuid)) return false;
         int[] slots = playerUuid.equals(player1) ? P1_SLOTS : P2_SLOTS;
-        for (int s : slots) {
-            if (s == rawSlot) return true;
-        }
+        for (int slot : slots) if (slot == rawSlot) return true;
         return false;
     }
 
-    /**
-     * Get the index (0-15) within the player's item array for the given GUI slot.
-     * Returns -1 if not a valid player slot.
-     */
-    public int getItemIndex(UUID playerUuid, int rawSlot) {
+    public synchronized int getItemIndex(UUID playerUuid, int rawSlot) {
+        if (!isParticipant(playerUuid)) return -1;
         int[] slots = playerUuid.equals(player1) ? P1_SLOTS : P2_SLOTS;
-        for (int i = 0; i < slots.length; i++) {
-            if (slots[i] == rawSlot) return i;
-        }
+        for (int i = 0; i < slots.length; i++) if (slots[i] == rawSlot) return i;
         return -1;
     }
 
-    /**
-     * Player places an item in their offer slot.
-     */
-    public void setItem(UUID playerUuid, int index, ItemStack item) {
+    /** Update a cached offer slot for callers that do not use the live GUI. */
+    public synchronized void setItem(UUID playerUuid, int index, ItemStack item) {
+        if (state != State.OPEN || !isParticipant(playerUuid) || index < 0 || index >= 16) return;
         ItemStack[] items = playerUuid.equals(player1) ? player1Items : player2Items;
-        items[index] = item != null && !Items.isEmpty(item) ? item.clone() : null;
+        items[index] = copyOrNull(item);
         resetConfirmations();
         if (gui != null) gui.refresh();
     }
 
-    /**
-     * Get a player's offered items.
-     */
-    public ItemStack[] getItems(UUID playerUuid) {
-        return playerUuid.equals(player1) ? player1Items : player2Items;
+    /** Return a defensive copy; callers cannot mutate the escrow cache. */
+    public synchronized ItemStack[] getItems(UUID playerUuid) {
+        if (!isParticipant(playerUuid)) return new ItemStack[0];
+        ItemStack[] source = playerUuid.equals(player1) ? player1Items : player2Items;
+        ItemStack[] copy = new ItemStack[source.length];
+        for (int i = 0; i < source.length; i++) copy[i] = copyOrNull(source[i]);
+        return copy;
     }
 
-    /**
-     * Add money to a player's offer.
-     */
-    public void addMoney(UUID playerUuid, long amount) {
-        if (amount <= 0) return;
+    /** Add money to a participant's offer without overflowing or reserving twice. */
+    public synchronized void addMoney(UUID playerUuid, long amount) {
+        if (state != State.OPEN || !isParticipant(playerUuid) || amount <= 0) return;
         EconomyData eco = manager.getPlugin().getEconomy();
+        if (eco == null) return;
         long balance = eco.get(playerUuid);
-        long currentOffer = playerUuid.equals(player1) ? player1Money : player2Money;
-        long maxAdd = balance - currentOffer;
-        long toAdd = Math.min(amount, maxAdd);
-        if (toAdd <= 0) {
-            Player p = Bukkit.getPlayer(playerUuid);
-            if (p != null) manager.getPlugin().sendMessage(p, manager.getPlugin().trc("error.not_enough_funds", NamedTextColor.RED));
+        long currentOffer = getMoneyUnsafe(playerUuid);
+        if (balance < 0 || currentOffer < 0 || balance <= currentOffer) {
+            sendInsufficientFunds(playerUuid);
             return;
         }
-        if (playerUuid.equals(player1)) {
-            player1Money += toAdd;
-        } else {
-            player2Money += toAdd;
+        long toAdd = Math.min(amount, balance - currentOffer);
+        if (toAdd <= 0) {
+            sendInsufficientFunds(playerUuid);
+            return;
+        }
+        try {
+            setMoneyUnsafe(playerUuid, Math.addExact(currentOffer, toAdd));
+        } catch (ArithmeticException overflow) {
+            sendInsufficientFunds(playerUuid);
+            return;
         }
         resetConfirmations();
         if (gui != null) gui.refresh();
     }
 
-    /**
-     * Remove money from a player's offer.
-     */
-    public void removeMoney(UUID playerUuid, long amount) {
-        if (amount <= 0) return;
-        if (playerUuid.equals(player1)) {
-            player1Money = Math.max(0, player1Money - amount);
-        } else {
-            player2Money = Math.max(0, player2Money - amount);
-        }
+    private void sendInsufficientFunds(UUID playerUuid) {
+        Player p = Bukkit.getPlayer(playerUuid);
+        if (p != null) manager.getPlugin().sendMessage(p,
+                manager.getPlugin().trc("error.not_enough_funds", NamedTextColor.RED));
+    }
+
+    public synchronized void removeMoney(UUID playerUuid, long amount) {
+        if (state != State.OPEN || !isParticipant(playerUuid) || amount <= 0) return;
+        setMoneyUnsafe(playerUuid, Math.max(0L, getMoneyUnsafe(playerUuid) - amount));
         resetConfirmations();
         if (gui != null) gui.refresh();
     }
 
-    public long getMoney(UUID playerUuid) {
+    public synchronized long getMoney(UUID playerUuid) {
+        return isParticipant(playerUuid) ? getMoneyUnsafe(playerUuid) : 0L;
+    }
+
+    private long getMoneyUnsafe(UUID playerUuid) {
         return playerUuid.equals(player1) ? player1Money : player2Money;
     }
 
-    /**
-     * Toggle confirm for a player.
-     */
-    public void toggleConfirm(UUID playerUuid) {
-        if (playerUuid.equals(player1)) {
-            player1Confirmed = !player1Confirmed;
-        } else {
-            player2Confirmed = !player2Confirmed;
-        }
-
-        if (gui != null) gui.refresh();
-
-        // If both confirmed, start countdown
-        if (player1Confirmed && player2Confirmed) {
-            startCountdown();
-        } else {
-            cancelCountdown();
-        }
+    private void setMoneyUnsafe(UUID playerUuid, long amount) {
+        if (playerUuid.equals(player1)) player1Money = amount;
+        else player2Money = amount;
     }
 
-    public boolean isConfirmed(UUID playerUuid) {
+    /** Toggle confirmation for a participant. */
+    public synchronized void toggleConfirm(UUID playerUuid) {
+        if (state != State.OPEN || !isParticipant(playerUuid)) return;
+        // Capture any click which was applied before this control click.
+        syncItemsInternal();
+        if (playerUuid.equals(player1)) player1Confirmed = !player1Confirmed;
+        else player2Confirmed = !player2Confirmed;
+        if (gui != null) gui.refresh();
+        if (player1Confirmed && player2Confirmed) startCountdown();
+        else cancelCountdown();
+    }
+
+    public synchronized boolean isConfirmed(UUID playerUuid) {
+        if (!isParticipant(playerUuid)) return false;
         return playerUuid.equals(player1) ? player1Confirmed : player2Confirmed;
     }
 
-    /**
-     * Reset both confirmations (when items/money change).
-     */
+    /** Reset both confirmations when an offer changes. */
     private void resetConfirmations() {
+        if (state != State.OPEN) return;
         boolean wasAnyConfirmed = player1Confirmed || player2Confirmed;
         player1Confirmed = false;
         player2Confirmed = false;
@@ -220,41 +202,46 @@ public class TradeSession {
         if (wasAnyConfirmed) {
             Player p1 = Bukkit.getPlayer(player1);
             Player p2 = Bukkit.getPlayer(player2);
-            if (p1 != null) manager.getPlugin().sendMessage(p1, manager.getPlugin().trc("trade.reset_confirmations", NamedTextColor.YELLOW));
-            if (p2 != null) manager.getPlugin().sendMessage(p2, manager.getPlugin().trc("trade.reset_confirmations", NamedTextColor.YELLOW));
+            if (p1 != null) manager.getPlugin().sendMessage(p1,
+                    manager.getPlugin().trc("trade.reset_confirmations", NamedTextColor.YELLOW));
+            if (p2 != null) manager.getPlugin().sendMessage(p2,
+                    manager.getPlugin().trc("trade.reset_confirmations", NamedTextColor.YELLOW));
         }
+    }
+
+    /** Called before a vanilla click/drag is applied to invalidate countdown. */
+    public synchronized void noteOfferInteraction(UUID playerUuid) {
+        if (state == State.OPEN && isParticipant(playerUuid)) resetConfirmations();
     }
 
     private void startCountdown() {
         cancelCountdown();
         countdownSeconds = 3;
-
-        Player p1 = Bukkit.getPlayer(player1);
-        Player p2 = Bukkit.getPlayer(player2);
-
         countdownTaskId = Bukkit.getScheduler().runTaskTimer(manager.getPlugin(), () -> {
-            if (finished) {
-                cancelCountdown();
-                return;
+            synchronized (TradeSession.this) {
+                if (state != State.OPEN) {
+                    cancelCountdown();
+                    return;
+                }
+                if (!player1Confirmed || !player2Confirmed) {
+                    cancelCountdown();
+                    if (gui != null) gui.refresh();
+                    return;
+                }
+                if (countdownSeconds <= 0) {
+                    cancelCountdown();
+                    executeTrade();
+                    return;
+                }
+                Player cp1 = Bukkit.getPlayer(player1);
+                Player cp2 = Bukkit.getPlayer(player2);
+                if (cp1 != null) manager.getPlugin().sendMessage(cp1,
+                        manager.getPlugin().trc("trade.completing_in", NamedTextColor.GOLD, countdownSeconds));
+                if (cp2 != null) manager.getPlugin().sendMessage(cp2,
+                        manager.getPlugin().trc("trade.completing_in", NamedTextColor.GOLD, countdownSeconds));
+                if (gui != null) gui.updateStatus(manager.getPlugin().tr("trade.gui.status.countdown", countdownSeconds));
+                countdownSeconds--;
             }
-            if (!player1Confirmed || !player2Confirmed) {
-                cancelCountdown();
-                if (gui != null) gui.refresh();
-                return;
-            }
-            if (countdownSeconds <= 0) {
-                cancelCountdown();
-                executeTrade();
-                return;
-            }
-
-            Player cp1 = Bukkit.getPlayer(player1);
-            Player cp2 = Bukkit.getPlayer(player2);
-            if (cp1 != null) manager.getPlugin().sendMessage(cp1, manager.getPlugin().trc("trade.completing_in", NamedTextColor.GOLD, countdownSeconds));
-            if (cp2 != null) manager.getPlugin().sendMessage(cp2, manager.getPlugin().trc("trade.completing_in", NamedTextColor.GOLD, countdownSeconds));
-
-            if (gui != null) gui.updateStatus(manager.getPlugin().tr("trade.gui.status.countdown", countdownSeconds));
-            countdownSeconds--;
         }, 0L, 20L).getTaskId();
     }
 
@@ -266,245 +253,499 @@ public class TradeSession {
         countdownSeconds = -1;
     }
 
-    /**
-     * Execute the trade — swap items and money.
-     * Validates everything before committing.
-     */
-    private void executeTrade() {
-        if (finished) return;
-        finished = true;
+    /** Validate and settle; no state is terminal until all preflight checks pass. */
+    private synchronized void executeTrade() {
+        if (state != State.OPEN || !player1Confirmed || !player2Confirmed) return;
         cancelCountdown();
+
+        // A delayed click synchronizer may not have run yet. If live data
+        // differs from the confirmed snapshot, require fresh confirmation.
+        if (syncItemsInternal()) return;
 
         Player p1 = Bukkit.getPlayer(player1);
         Player p2 = Bukkit.getPlayer(player2);
-
-        if (p1 == null || !p1.isOnline() || p2 == null || !p2.isOnline()) {
+        if (!isOnline(p1) || !isOnline(p2)) {
+            OfferSnapshot offers = snapshotSafely();
+            EconomyData currentEconomy = manager.getPlugin().getEconomy();
+            long balance1 = balanceFor(currentEconomy, player1);
+            long balance2 = balanceFor(currentEconomy, player2);
+            auditTrade("CANCELLED", "player_offline", balance1, balance2,
+                    balance1, balance2, balance1, balance2, offers, true, false, false);
             cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.player_offline"));
             return;
         }
-
         EconomyData eco = manager.getPlugin().getEconomy();
-
-        // Validate money balances
-        if (player1Money > 0 && eco.get(player1) < player1Money) {
-            cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.insufficient_funds"));
-            return;
-        }
-        if (player2Money > 0 && eco.get(player2) < player2Money) {
-            cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.insufficient_funds"));
+        if (eco == null) {
+            OfferSnapshot offers = snapshotSafely();
+            auditTrade("CANCELLED", "economy_unavailable", 0L, 0L, 0L, 0L,
+                    0L, 0L, offers, true, false, false);
+            cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.internal_error"));
             return;
         }
 
-        // Collect non-null items
-        List<ItemStack> p1Offer = new ArrayList<>();
-        for (ItemStack item : player1Items) {
-            if (item != null && !Items.isEmpty(item)) p1Offer.add(item.clone());
-        }
-        List<ItemStack> p2Offer = new ArrayList<>();
-        for (ItemStack item : player2Items) {
-            if (item != null && !Items.isEmpty(item)) p2Offer.add(item.clone());
-        }
-
-        // Transfer money
-        if (player1Money > 0) {
-            eco.add(player1, -player1Money);
-            eco.add(player2, player1Money);
-        }
-        if (player2Money > 0) {
-            eco.add(player2, -player2Money);
-            eco.add(player1, player2Money);
+        TradeSettlement.Result plan = TradeSettlement.plan(
+                eco.get(player1), eco.get(player2), player1Money, player2Money);
+        if (!plan.valid()) {
+            auditTrade("CANCELLED", plan.failure().name().toLowerCase(Locale.ROOT),
+                    eco.get(player1), eco.get(player2), eco.get(player1), eco.get(player2),
+                    eco.get(player1), eco.get(player2), snapshotSafely(), true, false, false);
+            cancelAndReturnItems(reasonFor(plan.failure()));
+            return;
         }
 
-        // Give P1's items to P2
-        for (ItemStack item : p1Offer) {
-            Map<Integer, ItemStack> leftover = p2.getInventory().addItem(item);
-            for (ItemStack left : leftover.values()) {
-                p2.getWorld().dropItemNaturally(p2.getLocation(), left);
+        OfferSnapshot offers = snapshotSafely();
+        long balance1Before = eco.get(player1);
+        long balance2Before = eco.get(player2);
+        // Enter the terminal-in-progress state before touching either side.
+        // Close/click callbacks can no longer race the escrow drain.
+        state = State.SETTLING;
+        boolean escrowCleared = true;
+        try {
+            // Remove the virtual escrow before committing money. If the
+            // checked economy operation rejects the trade, finishCancelled()
+            // returns this exact snapshot; no account is charged.
+            clearOfferEscrow();
+        } catch (RuntimeException clearFailure) {
+            escrowCleared = false;
+            // Keep going with the immutable snapshot. The GUI is closed while
+            // SETTLING, so a third-party inventory implementation cannot use a
+            // stale slot to submit a second trade.
+            manager.getPlugin().getLogger().warning("Could not clear trade escrow: "
+                    + clearFailure.getMessage());
+        }
+
+        EconomyData.TradeSettlementResult result;
+        try {
+            result = eco.applyTradeSettlement(player1, player2, player1Money, player2Money);
+        } catch (RuntimeException settlementFailure) {
+            manager.getPlugin().getLogger().warning("Could not settle trade balances: "
+                    + settlementFailure.getMessage());
+            auditTrade("CANCELLED", "settlement_exception", balance1Before, balance2Before,
+                    eco.get(player1), eco.get(player2), balance1Before, balance2Before,
+                    offers, escrowCleared, false, false);
+            finishCancelled(manager.getPlugin().tr("trade.cancel.internal_error"),
+                    offers.player1(), offers.player2());
+            return;
+        }
+        if (result != EconomyData.TradeSettlementResult.SUCCESS) {
+            // applyTradeSettlement promises no mutation on failure.
+            auditTrade("CANCELLED", reasonFor(result), balance1Before, balance2Before,
+                    balance1Before, balance2Before, balance1Before, balance2Before,
+                    offers, escrowCleared, false, false);
+            finishCancelled(reasonFor(result), offers.player1(), offers.player2());
+            return;
+        }
+
+        try {
+            // deliverItems catches inventory/persistence failures per stack and
+            // queues only the undelivered remainder; do not retry the complete
+            // offer here or a partial exception could duplicate delivered items.
+            boolean player1Delivery = deliverItems(p2, player2, offers.player1());
+            boolean player2Delivery = deliverItems(p1, player1, offers.player2());
+            boolean deliveryVerified = player1Delivery && player2Delivery;
+            long balance1After = eco.get(player1);
+            long balance2After = eco.get(player2);
+            boolean balancesVerified = balance1After == plan.player1Balance()
+                    && balance2After == plan.player2Balance();
+            boolean economyPersisted;
+            try {
+                economyPersisted = eco.save();
+            } catch (RuntimeException saveFailure) {
+                economyPersisted = false;
+                manager.getPlugin().getLogger().warning("Could not immediately save trade balances: "
+                        + saveFailure.getMessage());
             }
-        }
+            auditTrade("COMMITTED", balancesVerified && deliveryVerified && escrowCleared ? "verified" : "post_commit_check",
+                    balance1Before, balance2Before, balance1After, balance2After,
+                    plan.player1Balance(), plan.player2Balance(), offers,
+                    escrowCleared, balancesVerified && deliveryVerified, economyPersisted);
 
-        // Give P2's items to P1
-        for (ItemStack item : p2Offer) {
-            Map<Integer, ItemStack> leftover = p1.getInventory().addItem(item);
-            for (ItemStack left : leftover.values()) {
-                p1.getWorld().dropItemNaturally(p1.getLocation(), left);
+            TransactionHistoryData history = manager.getPlugin().getTransactionHistory();
+            if (history != null) {
+                try {
+                    int p1ItemCount = itemCount(offers.player1());
+                    int p2ItemCount = itemCount(offers.player2());
+                    long p1NetMoney = safeDifference(player2Money, player1Money);
+                    long p2NetMoney = safeDifference(player1Money, player2Money);
+                    history.record(player1, "TRADE", p2.getName(), p1ItemCount, p1NetMoney, p2.getName());
+                    history.record(player2, "TRADE", p1.getName(), p2ItemCount, p2NetMoney, p1.getName());
+                    history.save();
+                } catch (RuntimeException historyFailure) {
+                    manager.getPlugin().getLogger().warning("Could not record trade history: "
+                            + historyFailure.getMessage());
+                }
             }
+
+            try {
+                manager.getPlugin().sendMessage(p1,
+                        manager.getPlugin().trc("trade.completed", NamedTextColor.GREEN));
+                manager.getPlugin().sendMessage(p2,
+                        manager.getPlugin().trc("trade.completed", NamedTextColor.GREEN));
+            } catch (RuntimeException messageFailure) {
+                manager.getPlugin().getLogger().warning("Could not notify completed trade: "
+                        + messageFailure.getMessage());
+            }
+        } finally {
+            state = State.FINISHED;
+            closeGuiSafely();
+            manager.removeSession(this);
         }
-
-        // Record history
-        TransactionHistoryData history = manager.getPlugin().getTransactionHistory();
-        String p1Name = p1.getName();
-        String p2Name = p2.getName();
-
-        int p1ItemCount = p1Offer.stream().mapToInt(ItemStack::getAmount).sum();
-        int p2ItemCount = p2Offer.stream().mapToInt(ItemStack::getAmount).sum();
-
-        long p1NetMoney = player2Money - player1Money; // what P1 gains in money
-        long p2NetMoney = player1Money - player2Money; // what P2 gains in money
-
-        history.record(player1, "TRADE", p2Name, p1ItemCount, p1NetMoney, p2Name);
-        history.record(player2, "TRADE", p1Name, p2ItemCount, p2NetMoney, p1Name);
-
-        // Close GUIs and notify
-        if (gui != null) gui.closeAll();
-
-        manager.getPlugin().sendMessage(p1, manager.getPlugin().trc("trade.completed", NamedTextColor.GREEN));
-        manager.getPlugin().sendMessage(p2, manager.getPlugin().trc("trade.completed", NamedTextColor.GREEN));
-
-        manager.removeSession(this);
     }
 
-    /**
-     * Cancel the trade and return all items to their original owners.
-     * Safe to call multiple times.
-     */
-    public void cancelAndReturnItems(String reason) {
-        if (finished) return;
-        finished = true;
+    private static boolean isOnline(Player p) { return p != null && p.isOnline(); }
+
+    private static int itemCount(List<ItemStack> items) {
+        long total = 0L;
+        for (ItemStack item : items) total += item.getAmount();
+        return (int) Math.min(Integer.MAX_VALUE, total);
+    }
+
+    private static long safeDifference(long left, long right) {
+        try { return Math.subtractExact(left, right); }
+        catch (ArithmeticException overflow) { return left >= 0 ? Long.MAX_VALUE : Long.MIN_VALUE; }
+    }
+
+    private String reasonFor(TradeSettlement.Failure failure) {
+        return switch (failure) {
+            case PLAYER1_INSUFFICIENT_FUNDS, PLAYER2_INSUFFICIENT_FUNDS ->
+                    manager.getPlugin().tr("trade.cancel.insufficient_funds");
+            case NEGATIVE_VALUE, BALANCE_OVERFLOW -> manager.getPlugin().tr("trade.cancel.invalid_amount");
+            case NONE -> manager.getPlugin().tr("trade.cancel.internal_error");
+        };
+    }
+
+    private String reasonFor(EconomyData.TradeSettlementResult result) {
+        return switch (result) {
+            case INSUFFICIENT_FUNDS -> manager.getPlugin().tr("trade.cancel.insufficient_funds");
+            case INVALID_AMOUNT, OVERFLOW -> manager.getPlugin().tr("trade.cancel.invalid_amount");
+            case INVALID_PLAYER -> manager.getPlugin().tr("trade.cancel.player_offline");
+            case SUCCESS -> manager.getPlugin().tr("trade.cancel.internal_error");
+        };
+    }
+
+    private OfferSnapshot snapshotSafely() {
+        try {
+            return currentOffers();
+        } catch (RuntimeException failure) {
+            manager.getPlugin().getLogger().warning("Could not snapshot trade escrow: "
+                    + failure.getMessage());
+            // The cached copy is preferable to losing escrow if a nonstandard
+            // inventory implementation fails while being read. The normal
+            // Bukkit inventory path never reaches this fallback.
+            return new OfferSnapshot(copyItems(player1Items), copyItems(player2Items));
+        }
+    }
+
+    /** Cancel and return the live escrow; safe to call repeatedly. */
+    public synchronized void cancelAndReturnItems(String reason) {
+        if (state != State.OPEN) return;
         cancelCountdown();
-
-        // Return P1's items
-        Player p1 = Bukkit.getPlayer(player1);
-        for (ItemStack item : player1Items) {
-            if (item != null && !Items.isEmpty(item)) {
-                if (p1 != null && p1.isOnline()) {
-                    Map<Integer, ItemStack> leftover = p1.getInventory().addItem(item.clone());
-                    for (ItemStack left : leftover.values()) {
-                        p1.getWorld().dropItemNaturally(p1.getLocation(), left);
-                    }
-                }
-                // If player is offline, items are lost (they were already removed from inventory)
-                // In practice, items taken from cursor/inventory are always returned here or on death
-            }
+        OfferSnapshot offers = snapshotSafely();
+        state = State.SETTLING;
+        try {
+            clearOfferEscrow();
+        } catch (RuntimeException clearFailure) {
+            manager.getPlugin().getLogger().warning("Could not clear cancelled trade escrow: "
+                    + clearFailure.getMessage());
         }
-
-        // Return P2's items
-        Player p2 = Bukkit.getPlayer(player2);
-        for (ItemStack item : player2Items) {
-            if (item != null && !Items.isEmpty(item)) {
-                if (p2 != null && p2.isOnline()) {
-                    Map<Integer, ItemStack> leftover = p2.getInventory().addItem(item.clone());
-                    for (ItemStack left : leftover.values()) {
-                        p2.getWorld().dropItemNaturally(p2.getLocation(), left);
-                    }
-                }
-            }
-        }
-
-        // Close GUIs
-        if (gui != null) gui.closeAll();
-
-        if (p1 != null && p1.isOnline()) {
-            manager.getPlugin().sendMessage(p1, manager.getPlugin().trc("trade.cancelled", NamedTextColor.RED, reason));
-        }
-        if (p2 != null && p2.isOnline()) {
-            manager.getPlugin().sendMessage(p2, manager.getPlugin().trc("trade.cancelled", NamedTextColor.RED, reason));
-        }
-
-        manager.removeSession(this);
+        finishCancelled(reason, offers.player1(), offers.player2());
     }
 
-    /**
-     * Called when a player requests to cancel.
-     */
-    public void cancelByPlayer(UUID playerUuid) {
+    private void finishCancelled(String reason, List<ItemStack> p1Items, List<ItemStack> p2Items) {
+        boolean player1Returned = false;
+        boolean player2Returned = false;
+        try {
+            try {
+                player1Returned = returnItems(player1, p1Items);
+            } catch (RuntimeException failure) {
+                manager.getPlugin().getLogger().warning("Could not return player 1 trade escrow: "
+                        + failure.getMessage());
+            }
+            try {
+                player2Returned = returnItems(player2, p2Items);
+            } catch (RuntimeException failure) {
+                manager.getPlugin().getLogger().warning("Could not return player 2 trade escrow: "
+                        + failure.getMessage());
+            }
+        } finally {
+            // Never leave a terminal session indexed forever because an
+            // inventory adapter or persistence provider threw unexpectedly.
+            state = State.FINISHED;
+            closeGuiSafely();
+            String safeReason = reason == null || reason.isBlank()
+                    ? manager.getPlugin().tr("trade.cancel.internal_error") : reason;
+            EconomyData economy = manager.getPlugin().getEconomy();
+            long balance1 = balanceFor(economy, player1);
+            long balance2 = balanceFor(economy, player2);
+            auditTrade("CANCELLED", safeReason, balance1, balance2, balance1, balance2,
+                    balance1, balance2, new OfferSnapshot(p1Items == null ? List.of() : p1Items,
+                            p2Items == null ? List.of() : p2Items), true, player1Returned && player2Returned,
+                    true);
+            Player p1 = Bukkit.getPlayer(player1);
+            Player p2 = Bukkit.getPlayer(player2);
+            try {
+                if (isOnline(p1)) manager.getPlugin().sendMessage(p1,
+                        manager.getPlugin().trc("trade.cancelled", NamedTextColor.RED, safeReason));
+                if (isOnline(p2)) manager.getPlugin().sendMessage(p2,
+                        manager.getPlugin().trc("trade.cancelled", NamedTextColor.RED, safeReason));
+            } catch (RuntimeException messageFailure) {
+                manager.getPlugin().getLogger().warning("Could not notify cancelled trade: "
+                        + messageFailure.getMessage());
+            } finally {
+                manager.removeSession(this);
+            }
+        }
+    }
+
+    /** Return items to an online player, or queue them for reconnect. */
+    private boolean returnItems(UUID owner, List<ItemStack> items) {
+        if (items == null || items.isEmpty()) return true;
+        Player online = Bukkit.getPlayer(owner);
+        List<ItemStack> queued = new ArrayList<>();
+        boolean returned = true;
+        for (ItemStack item : items) {
+            if (Items.isEmpty(item)) continue;
+            if (!isOnline(online) || online.isDead()) {
+                returned = false;
+                queued.add(item.clone());
+                continue;
+            }
+            try {
+                Map<Integer, ItemStack> leftover = online.getInventory().addItem(item.clone());
+                if (!leftover.isEmpty()) returned = false;
+                for (ItemStack left : leftover.values()) queueLeftover(left, queued);
+            } catch (RuntimeException failure) {
+                returned = false;
+                manager.getPlugin().getLogger().warning("Could not return trade item to " + owner + ": "
+                        + failure.getMessage());
+                queued.add(item.clone());
+            }
+        }
+        return returned && persistQueued(owner, queued);
+    }
+
+    private boolean deliverItems(Player recipient, UUID recipientId, List<ItemStack> items) {
+        if (items == null || items.isEmpty()) return true;
+        List<ItemStack> queued = new ArrayList<>();
+        boolean verified = true;
+        for (ItemStack item : items) {
+            if (Items.isEmpty(item)) continue;
+            if (!isOnline(recipient) || recipient.isDead()) {
+                verified = false;
+                queued.add(item.clone());
+                continue;
+            }
+            try {
+                Map<Integer, ItemStack> leftover = recipient.getInventory().addItem(item.clone());
+                if (!leftover.isEmpty()) verified = false;
+                for (ItemStack left : leftover.values()) queueLeftover(left, queued);
+            } catch (RuntimeException failure) {
+                verified = false;
+                manager.getPlugin().getLogger().warning("Could not deliver trade item to " + recipientId + ": "
+                        + failure.getMessage());
+                queued.add(item.clone());
+            }
+        }
+        return verified && persistQueued(recipientId, queued);
+    }
+
+    private void queueLeftover(ItemStack item, List<ItemStack> queued) {
+        if (Items.isEmpty(item)) return;
+        // Keep leftovers in the durable delivery queue instead of dropping
+        // them into a potentially unloaded or hostile world. HUD/login
+        // delivery retries when inventory space becomes available.
+        queued.add(item.clone());
+    }
+
+    private boolean persistQueued(UUID owner, List<ItemStack> queued) {
+        if (queued.isEmpty()) return true;
+        if (manager.getPlugin().getMarketDeliveries() == null) {
+            manager.getPlugin().getLogger().severe("Trade item could not be queued for " + owner);
+            return false;
+        }
+        try {
+            for (ItemStack item : queued) manager.getPlugin().getMarketDeliveries().add(owner, item);
+        } catch (RuntimeException failure) {
+            manager.getPlugin().getLogger().severe("Could not queue trade item for " + owner + ": "
+                    + failure.getMessage());
+            return false;
+        }
+        try {
+            manager.getPlugin().getMarketDeliveries().save();
+        } catch (RuntimeException failure) {
+            manager.getPlugin().getLogger().warning("Could not persist queued trade item: "
+                    + failure.getMessage());
+            return false;
+        }
+        return true;
+    }
+
+    private void auditTrade(String outcome, String reason,
+                            long balance1Before, long balance2Before,
+                            long balance1After, long balance2After,
+                            long expected1, long expected2,
+                            OfferSnapshot offers, boolean escrowCleared,
+                            boolean verified, boolean economyPersisted) {
+        try {
+            TradeAuditLog.append(manager.getPlugin().getDataFolder().toPath(), outcome, reason,
+                    player1, nameOf(player1), player2, nameOf(player2),
+                    balance1Before, balance2Before, balance1After, balance2After,
+                    expected1, expected2, player1Money, player2Money,
+                    itemCount(offers.player1()), itemCount(offers.player2()), escrowCleared,
+                    balance1After == expected1 && balance2After == expected2,
+                    verified, economyPersisted, reason);
+        } catch (RuntimeException failure) {
+            manager.getPlugin().getLogger().warning("Could not write trade audit log: "
+                    + failure.getMessage());
+        }
+    }
+
+    private String nameOf(UUID uuid) {
+        Player player = Bukkit.getPlayer(uuid);
+        return player == null ? uuid.toString() : player.getName();
+    }
+
+    private static long balanceFor(EconomyData economy, UUID player) {
+        return economy == null ? 0L : economy.get(player);
+    }
+
+    private void closeGuiSafely() {
+        if (gui == null) return;
+        try { gui.closeAll(); }
+        catch (RuntimeException failure) {
+            manager.getPlugin().getLogger().warning("Could not close trade GUI: " + failure.getMessage());
+        }
+    }
+
+    public synchronized void cancelByPlayer(UUID playerUuid) {
+        if (state != State.OPEN || !isParticipant(playerUuid)) return;
         Player who = Bukkit.getPlayer(playerUuid);
         String name = who != null ? who.getName() : manager.getPlugin().tr("common.unknown");
         cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.by_player", name));
     }
 
-    /**
-     * Handle a player clicking in the trade GUI.
-     * Returns true if the event should be cancelled (not allowed to move item).
-     */
-    public boolean handleClick(Player player, int rawSlot, ItemStack cursor, ItemStack slotItem, boolean isTradeInventory) {
-        if (finished) return true;
+    /** Compatibility overload retained for existing integrations. */
+    public boolean handleClick(Player player, int rawSlot, ItemStack cursor,
+                               ItemStack slotItem, boolean isTradeInventory) {
+        return handleClick(player, rawSlot, cursor, slotItem, isTradeInventory, null, null);
+    }
+
+    public synchronized boolean handleClick(Player player, int rawSlot, ItemStack cursor,
+                                             ItemStack slotItem, boolean isTradeInventory,
+                                             InventoryAction action, ClickType clickType) {
+        if (state != State.OPEN || player == null || !isParticipant(player.getUniqueId())) return true;
         UUID uuid = player.getUniqueId();
-
-        // Clicks in the trade inventory
-        if (isTradeInventory) {
-            // Check if it's a control button
-            if (isControlSlot(uuid, rawSlot)) {
-                handleControlClick(uuid, rawSlot);
-                return true; // always cancel control clicks
-            }
-
-            // Check if it's the player's own offer area
-            if (isPlayerSlot(uuid, rawSlot)) {
-                // Player is picking up their own item — allowed via the handleItemInteraction below
-                return false; // let the event through, we track via handleItemChange
-            }
-
-            // Any other slot (separator, opponent's area, info slots) — block
+        // A double click initiated in the player's lower inventory can still
+        // collect matching stacks from the top inventory. Never let it touch
+        // the counterparty's escrow. Creative cloning and unknown actions are
+        // also fail-closed regardless of the clicked half.
+        if (clickType == ClickType.DOUBLE_CLICK
+                || action == InventoryAction.COLLECT_TO_CURSOR
+                || action == InventoryAction.CLONE_STACK
+                || action == InventoryAction.UNKNOWN) return true;
+        if (!isTradeInventory) return false;
+        if (isControlSlot(uuid, rawSlot)) {
+            handleControlClick(uuid, rawSlot);
             return true;
         }
-
-        // Click in player's own inventory (bottom) — allow shift-clicking items into trade
+        if (!isPlayerSlot(uuid, rawSlot)) return true;
+        // These actions can collect the other side or duplicate creative stacks.
+        resetConfirmations();
         return false;
     }
 
     private boolean isControlSlot(UUID playerUuid, int rawSlot) {
         if (playerUuid.equals(player1)) {
             return rawSlot == P1_CONFIRM || rawSlot == P1_CANCEL
-                    || rawSlot == P1_MONEY_ADD || rawSlot == P1_MONEY_SUB
-                    || rawSlot == P1_MONEY_INFO;
-        } else {
-            return rawSlot == P2_CONFIRM || rawSlot == P2_CANCEL
-                    || rawSlot == P2_MONEY_ADD || rawSlot == P2_MONEY_SUB
-                    || rawSlot == P2_MONEY_INFO;
+                    || rawSlot == P1_MONEY_ADD || rawSlot == P1_MONEY_SUB || rawSlot == P1_MONEY_INFO;
         }
+        if (playerUuid.equals(player2)) {
+            return rawSlot == P2_CONFIRM || rawSlot == P2_CANCEL
+                    || rawSlot == P2_MONEY_ADD || rawSlot == P2_MONEY_SUB || rawSlot == P2_MONEY_INFO;
+        }
+        return false;
     }
 
     private void handleControlClick(UUID playerUuid, int rawSlot) {
         boolean isP1 = playerUuid.equals(player1);
-
         int confirmSlot = isP1 ? P1_CONFIRM : P2_CONFIRM;
         int cancelSlot = isP1 ? P1_CANCEL : P2_CANCEL;
         int addSlot = isP1 ? P1_MONEY_ADD : P2_MONEY_ADD;
         int subSlot = isP1 ? P1_MONEY_SUB : P2_MONEY_SUB;
-
-        if (rawSlot == confirmSlot) {
-            toggleConfirm(playerUuid);
-        } else if (rawSlot == cancelSlot) {
-            cancelByPlayer(playerUuid);
-        } else if (rawSlot == addSlot) {
-            addMoney(playerUuid, 10);
-        } else if (rawSlot == subSlot) {
-            removeMoney(playerUuid, 10);
-        }
+        if (rawSlot == confirmSlot) toggleConfirm(playerUuid);
+        else if (rawSlot == cancelSlot) cancelByPlayer(playerUuid);
+        else if (rawSlot == addSlot) addMoney(playerUuid, 10);
+        else if (rawSlot == subSlot) removeMoney(playerUuid, 10);
     }
 
-    /**
-     * Called after the inventory content changes to sync the item arrays.
-     * This is the source of truth — we read actual GUI contents.
-     */
-    public void syncItems() {
-        if (finished || gui == null) return;
-        boolean changed = false;
+    /** Synchronize cached snapshots after Bukkit applies a click/drag. */
+    public synchronized void syncItems() {
+        if (state != State.OPEN || gui == null || gui.getInventory() == null) return;
+        syncItemsInternal();
+    }
 
+    private boolean syncItemsInternal() {
+        if (gui == null || gui.getInventory() == null) return false;
+        Inventory inventory = gui.getInventory();
+        boolean changed = false;
         for (int i = 0; i < P1_SLOTS.length; i++) {
-            ItemStack guiItem = gui.getInventory().getItem(P1_SLOTS[i]);
-            ItemStack stored = player1Items[i];
-            if (!Objects.equals(guiItem, stored)) {
-                player1Items[i] = guiItem != null && !Items.isEmpty(guiItem) ? guiItem.clone() : null;
+            ItemStack current = copyOrNull(inventory.getItem(P1_SLOTS[i]));
+            if (!Objects.equals(current, player1Items[i])) {
+                player1Items[i] = current;
                 changed = true;
             }
         }
         for (int i = 0; i < P2_SLOTS.length; i++) {
-            ItemStack guiItem = gui.getInventory().getItem(P2_SLOTS[i]);
-            ItemStack stored = player2Items[i];
-            if (!Objects.equals(guiItem, stored)) {
-                player2Items[i] = guiItem != null && !Items.isEmpty(guiItem) ? guiItem.clone() : null;
+            ItemStack current = copyOrNull(inventory.getItem(P2_SLOTS[i]));
+            if (!Objects.equals(current, player2Items[i])) {
+                player2Items[i] = current;
                 changed = true;
             }
         }
-
         if (changed) {
             resetConfirmations();
             if (gui != null) gui.refresh();
         }
+        return changed;
     }
 
-    public TradeGui getGui() { return gui; }
-}
+    private OfferSnapshot currentOffers() {
+        Inventory inventory = gui == null ? null : gui.getInventory();
+        if (inventory == null) return new OfferSnapshot(copyItems(player1Items), copyItems(player2Items));
+        return new OfferSnapshot(readSlots(inventory, P1_SLOTS), readSlots(inventory, P2_SLOTS));
+    }
 
+    private static List<ItemStack> readSlots(Inventory inventory, int[] slots) {
+        List<ItemStack> result = new ArrayList<>();
+        for (int slot : slots) {
+            ItemStack item = copyOrNull(inventory.getItem(slot));
+            if (item != null) result.add(item);
+        }
+        return result;
+    }
+
+    private static List<ItemStack> copyItems(ItemStack[] source) {
+        List<ItemStack> result = new ArrayList<>();
+        for (ItemStack item : source) {
+            ItemStack copy = copyOrNull(item);
+            if (copy != null) result.add(copy);
+        }
+        return result;
+    }
+
+    private void clearOfferEscrow() {
+        Inventory inventory = gui == null ? null : gui.getInventory();
+        if (inventory != null) {
+            for (int slot : P1_SLOTS) inventory.setItem(slot, null);
+            for (int slot : P2_SLOTS) inventory.setItem(slot, null);
+        }
+        Arrays.fill(player1Items, null);
+        Arrays.fill(player2Items, null);
+    }
+
+    private static ItemStack copyOrNull(ItemStack item) {
+        return item == null || Items.isEmpty(item) ? null : item.clone();
+    }
+
+    public synchronized TradeGui getGui() { return gui; }
+}

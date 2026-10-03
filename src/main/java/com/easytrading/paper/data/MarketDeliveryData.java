@@ -36,7 +36,7 @@ public class MarketDeliveryData {
     }
 
     public synchronized void add(UUID playerId, ItemStack stack) {
-        if (stack == null || stack.getType().isAir() || stack.getAmount() <= 0) {
+        if (playerId == null || !isValidStack(stack)) {
             return;
         }
         List<ItemStack> items = deliveries.computeIfAbsent(playerId, ignored -> new ArrayList<>());
@@ -58,13 +58,16 @@ public class MarketDeliveryData {
     }
 
     public synchronized void set(UUID playerId, List<ItemStack> items) {
+        if (playerId == null) {
+            return;
+        }
         if (items == null || items.isEmpty()) {
             deliveries.remove(playerId);
             return;
         }
         List<ItemStack> copy = new ArrayList<>(items.size());
         for (ItemStack item : items) {
-            if (item == null || item.getType().isAir() || item.getAmount() <= 0) {
+            if (!isValidStack(item)) {
                 continue;
             }
             copy.add(item.clone());
@@ -104,7 +107,10 @@ public class MarketDeliveryData {
                     }
                     try {
                         byte[] bytes = Base64.getDecoder().decode(obj.get("itemBytes").getAsString());
-                        items.add(Items.deserialize(bytes));
+                        ItemStack decoded = Items.deserialize(bytes);
+                        if (isValidStack(decoded)) {
+                            items.add(decoded);
+                        }
                     } catch (Exception ignored) {
                         // Skip corrupted legacy delivery entries instead of aborting the whole file load.
                     }
@@ -118,7 +124,7 @@ public class MarketDeliveryData {
         }
     }
 
-    public synchronized void save() {
+    public synchronized boolean save() {
         try {
             Files.createDirectories(file.getParent());
             JsonObject root = new JsonObject();
@@ -131,10 +137,11 @@ public class MarketDeliveryData {
                 }
                 root.add(entry.getKey().toString(), array);
             }
-            Files.writeString(file, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(file, GSON.toJson(root));
+            return true;
         } catch (IOException e) {
             e.printStackTrace();
+            return false;
         }
     }
 
@@ -150,6 +157,12 @@ public class MarketDeliveryData {
             remaining -= nextAmount;
         }
         return split;
+    }
+
+    private static boolean isValidStack(ItemStack stack) {
+        // Purchase orders and trade payouts may contain more than one
+        // vanilla stack; splitStack() normalizes them before persistence.
+        return stack != null && !stack.getType().isAir() && stack.getAmount() > 0;
     }
 }
 

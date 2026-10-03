@@ -74,6 +74,15 @@ public class MarketData {
     }
 
     public synchronized Listing add(UUID seller, ItemStack stack, long price, long createdAt, boolean promoted) {
+        if (seller == null || !isValidListingStack(stack)) {
+            throw new IllegalArgumentException("Listing seller/item is invalid");
+        }
+        if (price <= 0) {
+            throw new IllegalArgumentException("Listing price must be positive");
+        }
+        if (nextId <= 0 || nextId == Integer.MAX_VALUE) {
+            throw new IllegalStateException("Listing ID space exhausted");
+        }
         int id = nextId++;
         Listing l = new Listing(id, seller, stack.clone(), price, createdAt, promoted);
         listings.put(id, l);
@@ -85,6 +94,15 @@ public class MarketData {
     }
 
     public synchronized PurchaseOrder addPurchaseOrder(UUID buyer, ItemStack stack, long totalPrice, long createdAt) {
+        if (buyer == null || !isValidStack(stack)) {
+            throw new IllegalArgumentException("Purchase order buyer/item is invalid");
+        }
+        if (totalPrice <= 0) {
+            throw new IllegalArgumentException("Purchase order price must be positive");
+        }
+        if (nextPurchaseOrderId <= 0 || nextPurchaseOrderId == Integer.MAX_VALUE) {
+            throw new IllegalStateException("Purchase order ID space exhausted");
+        }
         int id = nextPurchaseOrderId++;
         PurchaseOrder order = new PurchaseOrder(id, buyer, stack.clone(), totalPrice, createdAt);
         purchaseOrders.put(id, order);
@@ -106,16 +124,22 @@ public class MarketData {
     }
 
     public synchronized void putBack(Listing listing) {
+        if (!isValidListing(listing)) {
+            return;
+        }
         listings.put(listing.id, listing);
         if (listing.id >= nextId) {
-            nextId = listing.id + 1;
+            nextId = listing.id == Integer.MAX_VALUE ? Integer.MAX_VALUE : listing.id + 1;
         }
     }
 
     public synchronized void putBackPurchaseOrder(PurchaseOrder order) {
+        if (!isValidPurchaseOrder(order)) {
+            return;
+        }
         purchaseOrders.put(order.id, order);
         if (order.id >= nextPurchaseOrderId) {
-            nextPurchaseOrderId = order.id + 1;
+            nextPurchaseOrderId = order.id == Integer.MAX_VALUE ? Integer.MAX_VALUE : order.id + 1;
         }
     }
 
@@ -208,7 +232,7 @@ public class MarketData {
 
     public synchronized Optional<Listing> relist(int id, long newPrice, long relistedAt) {
         Listing existing = listings.get(id);
-        if (existing == null) {
+        if (existing == null || newPrice <= 0 || !isValidListingStack(existing.stack)) {
             return Optional.empty();
         }
         Listing updated = new Listing(existing.id, existing.seller, existing.stack.clone(), newPrice, relistedAt,
@@ -218,6 +242,9 @@ public class MarketData {
     }
 
     public synchronized void addSale(long amount) {
+        if (amount < 0 || this.totalSales > Long.MAX_VALUE - amount) {
+            return;
+        }
         this.totalSales += amount;
     }
 
@@ -233,59 +260,65 @@ public class MarketData {
             JsonObject root = JsonParser.parseString(json).getAsJsonObject();
             nextId = root.has("nextId") ? root.get("nextId").getAsInt() : 1;
             nextPurchaseOrderId = root.has("nextPurchaseOrderId") ? root.get("nextPurchaseOrderId").getAsInt() : 1;
-            totalSales = root.has("totalSales") ? root.get("totalSales").getAsLong() : 0L;
+            totalSales = root.has("totalSales") ? Math.max(0L, root.get("totalSales").getAsLong()) : 0L;
             listings.clear();
             purchaseOrders.clear();
             if (root.has("listings")) {
                 JsonArray arr = root.getAsJsonArray("listings");
                 for (JsonElement el : arr) {
-                    JsonObject obj = el.getAsJsonObject();
-                    int id = obj.get("id").getAsInt();
-                    UUID seller = UUID.fromString(obj.get("seller").getAsString());
-                    long price = obj.get("price").getAsLong();
-                    long createdAt = obj.has("createdAt") ? obj.get("createdAt").getAsLong() : 0L;
-                    boolean promoted = obj.has("promoted") && obj.get("promoted").getAsBoolean();
-
-                    ItemStack stack = readItemStack(obj);
-
-                    Listing l = new Listing(id, seller, stack, price, createdAt, promoted);
-                    listings.put(id, l);
+                    try {
+                        JsonObject obj = el.getAsJsonObject();
+                        int id = obj.get("id").getAsInt();
+                        UUID seller = UUID.fromString(obj.get("seller").getAsString());
+                        long price = obj.get("price").getAsLong();
+                        long createdAt = obj.has("createdAt") ? obj.get("createdAt").getAsLong() : 0L;
+                        boolean promoted = obj.has("promoted") && obj.get("promoted").getAsBoolean();
+                        ItemStack stack = readItemStack(obj);
+                        if (id <= 0 || price <= 0 || !isValidListingStack(stack)) continue;
+                        Listing l = new Listing(id, seller, stack, price, createdAt, promoted);
+                        listings.put(id, l);
+                    } catch (Exception ignored) {
+                        // One corrupt entry must not prevent the remaining
+                        // listings from loading.
+                    }
                 }
             }
             if (root.has("purchaseOrders")) {
                 JsonArray arr = root.getAsJsonArray("purchaseOrders");
                 for (JsonElement el : arr) {
-                    JsonObject obj = el.getAsJsonObject();
-                    int id = obj.get("id").getAsInt();
-                    UUID buyer = UUID.fromString(obj.get("buyer").getAsString());
-                    long createdAt = obj.has("createdAt") ? obj.get("createdAt").getAsLong() : 0L;
-
-                    ItemStack stack = readItemStack(obj);
-
-                    long totalPrice;
-                    if (obj.has("totalPrice")) {
-                        totalPrice = obj.get("totalPrice").getAsLong();
-                    } else if (obj.has("reservedTotal")) {
-                        totalPrice = obj.get("reservedTotal").getAsLong();
-                    } else if (obj.has("pricePerItem")) {
-                        totalPrice = obj.get("pricePerItem").getAsLong() * stack.getAmount();
-                    } else {
-                        totalPrice = 0L;
+                    try {
+                        JsonObject obj = el.getAsJsonObject();
+                        int id = obj.get("id").getAsInt();
+                        UUID buyer = UUID.fromString(obj.get("buyer").getAsString());
+                        long createdAt = obj.has("createdAt") ? obj.get("createdAt").getAsLong() : 0L;
+                        ItemStack stack = readItemStack(obj);
+                        long totalPrice;
+                        if (obj.has("totalPrice")) {
+                            totalPrice = obj.get("totalPrice").getAsLong();
+                        } else if (obj.has("reservedTotal")) {
+                            totalPrice = obj.get("reservedTotal").getAsLong();
+                        } else if (obj.has("pricePerItem")) {
+                            totalPrice = Math.multiplyExact(obj.get("pricePerItem").getAsLong(), stack.getAmount());
+                        } else {
+                            totalPrice = 0L;
+                        }
+                        if (id <= 0 || totalPrice <= 0 || !isValidStack(stack)) continue;
+                        PurchaseOrder order = new PurchaseOrder(id, buyer, stack, totalPrice, createdAt);
+                        purchaseOrders.put(id, order);
+                    } catch (Exception ignored) {
+                        // Skip only the malformed order and continue loading.
                     }
-
-                    PurchaseOrder order = new PurchaseOrder(id, buyer, stack, totalPrice, createdAt);
-                    purchaseOrders.put(id, order);
                 }
             }
-            if (nextId <= 0) {
-                int max = 0;
-                for (int id : listings.keySet()) max = Math.max(max, id);
-                nextId = max + 1;
+            int maxListingId = 0;
+            for (int id : listings.keySet()) maxListingId = Math.max(maxListingId, id);
+            if (nextId <= maxListingId || nextId <= 0) {
+                nextId = maxListingId == Integer.MAX_VALUE ? Integer.MAX_VALUE : maxListingId + 1;
             }
-            if (nextPurchaseOrderId <= 0) {
-                int max = 0;
-                for (int id : purchaseOrders.keySet()) max = Math.max(max, id);
-                nextPurchaseOrderId = max + 1;
+            int maxOrderId = 0;
+            for (int id : purchaseOrders.keySet()) maxOrderId = Math.max(maxOrderId, id);
+            if (nextPurchaseOrderId <= maxOrderId || nextPurchaseOrderId <= 0) {
+                nextPurchaseOrderId = maxOrderId == Integer.MAX_VALUE ? Integer.MAX_VALUE : maxOrderId + 1;
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -293,13 +326,18 @@ public class MarketData {
     }
 
     private ItemStack readItemStack(JsonObject obj) {
+        ItemStack decoded = null;
         if (obj.has("itemBytes")) {
             try {
                 byte[] bytes = Base64.getDecoder().decode(obj.get("itemBytes").getAsString());
-                return Items.deserialize(bytes);
+                decoded = Items.deserialize(bytes);
             } catch (Exception ignored) {
                 // Fall back to legacy material/count fields if itemBytes came from an older format.
             }
+        }
+
+        if (isValidStack(decoded)) {
+            return decoded;
         }
 
         String matName = obj.has("material") ? obj.get("material").getAsString() : "STONE";
@@ -308,7 +346,28 @@ public class MarketData {
             mat = Material.STONE;
         }
         int count = obj.has("count") ? obj.get("count").getAsInt() : 1;
-        return new ItemStack(mat, Math.max(1, count));
+        if (count <= 0) {
+            throw new IllegalArgumentException("Invalid item count");
+        }
+        return new ItemStack(mat, count);
+    }
+
+    private static boolean isValidStack(ItemStack stack) {
+        return stack != null && !Items.isEmpty(stack);
+    }
+
+    private static boolean isValidListingStack(ItemStack stack) {
+        return isValidStack(stack) && stack.getAmount() <= stack.getMaxStackSize();
+    }
+
+    private static boolean isValidListing(Listing listing) {
+        return listing != null && listing.id > 0 && listing.seller != null
+                && listing.price > 0 && isValidListingStack(listing.stack);
+    }
+
+    private static boolean isValidPurchaseOrder(PurchaseOrder order) {
+        return order != null && order.id > 0 && order.buyer != null
+                && order.totalPrice > 0 && isValidStack(order.stack);
     }
 
     public synchronized void save() {
@@ -349,8 +408,7 @@ public class MarketData {
                 purchaseArr.add(obj);
             }
             root.add("purchaseOrders", purchaseArr);
-            Files.writeString(file, GSON.toJson(root), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            DataFileUtil.writeStringAtomic(file, GSON.toJson(root));
         } catch (IOException e) {
             e.printStackTrace();
         }
