@@ -1,11 +1,11 @@
 Easy Trading Russificator
 
-Официальный русификатор для EasyTrading 06.26.02
+Официальный русификатор для EasyTrading 11.26.01
 Совместимость: Paper / Minecraft 1.21.x
 
 Установка:
 1. Установите основной плагин EasyTrading.
-2. Скопируйте `EasyTrading-Russificator-1.21.x-06.26.02.jar` в папку `plugins`.
+2. Скопируйте `EasyTrading-Russificator-1.21.x-11.26.01.jar` в папку `plugins`.
 3. Перезапустите сервер.
 
 Важно:
