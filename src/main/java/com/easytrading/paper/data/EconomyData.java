@@ -10,11 +10,13 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Logger;
 
 public class EconomyData {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private final Map<UUID, Long> balances = new ConcurrentHashMap<>();
     private final Path file;
+    private final Logger logger;
 
     /**
      * Result of a checked balance mutation.  Economy operations are performed
@@ -40,7 +42,12 @@ public class EconomyData {
     }
 
     public EconomyData(Path dataFolder) {
+        this(dataFolder, Logger.getLogger(EconomyData.class.getName()));
+    }
+
+    public EconomyData(Path dataFolder, Logger logger) {
         this.file = dataFolder.resolve("economy.json");
+        this.logger = Objects.requireNonNull(logger, "logger");
         load();
     }
 
@@ -199,10 +206,14 @@ public class EconomyData {
                     if (amount >= 0) {
                         balances.put(uuid, amount);
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception entryFailure) {
+                    logger.warning("Skipping corrupt economy balance for '" + entry.getKey()
+                            + "': " + entryFailure.getMessage());
+                }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            balances.clear();
+            DataFileUtil.backupCorrupted(file, logger, e);
         }
     }
 
@@ -216,7 +227,7 @@ public class EconomyData {
             DataFileUtil.writeStringAtomic(file, GSON.toJson(root));
             return true;
         } catch (IOException e) {
-            e.printStackTrace();
+            logger.warning("Could not save economy data: " + e.getMessage());
             return false;
         }
     }

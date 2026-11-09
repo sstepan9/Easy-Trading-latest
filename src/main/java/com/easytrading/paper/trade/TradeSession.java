@@ -7,6 +7,7 @@ import com.easytrading.paper.data.TransactionHistoryData;
 import com.easytrading.paper.util.Items;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryAction;
@@ -24,11 +25,9 @@ import java.util.UUID;
 /**
  * Represents an active trade session between two players.
  *
- * <p>The GUI is an escrow container. It is treated as the source of truth
- * whenever it exists; cached arrays are snapshots used to detect changes
- * between confirmation and settlement. Bukkit applies an inventory click
- * after the click event, so reading a cache synchronously from that event can
- * otherwise omit the item just placed (or retain one just removed).</p>
+ * <p>The GUI is an escrow container. Offer-slot clicks are cancelled and then
+ * applied here synchronously, so the cached offer and visual escrow always
+ * change together before a confirmation can be processed.</p>
  */
 public class TradeSession {
 
@@ -108,6 +107,7 @@ public class TradeSession {
     /** Update a cached offer slot for callers that do not use the live GUI. */
     public synchronized void setItem(UUID playerUuid, int index, ItemStack item) {
         if (state != State.OPEN || !isParticipant(playerUuid) || index < 0 || index >= 16) return;
+        if (!ensureAllowed(playerUuid)) return;
         ItemStack[] items = playerUuid.equals(player1) ? player1Items : player2Items;
         items[index] = copyOrNull(item);
         resetConfirmations();
@@ -126,6 +126,7 @@ public class TradeSession {
     /** Add money to a participant's offer without overflowing or reserving twice. */
     public synchronized void addMoney(UUID playerUuid, long amount) {
         if (state != State.OPEN || !isParticipant(playerUuid) || amount <= 0) return;
+        if (!ensureAllowed(playerUuid)) return;
         EconomyData eco = manager.getPlugin().getEconomy();
         if (eco == null) return;
         long balance = eco.get(playerUuid);
@@ -157,6 +158,7 @@ public class TradeSession {
 
     public synchronized void removeMoney(UUID playerUuid, long amount) {
         if (state != State.OPEN || !isParticipant(playerUuid) || amount <= 0) return;
+        if (!ensureAllowed(playerUuid)) return;
         setMoneyUnsafe(playerUuid, Math.max(0L, getMoneyUnsafe(playerUuid) - amount));
         resetConfirmations();
         if (gui != null) gui.refresh();
@@ -178,8 +180,7 @@ public class TradeSession {
     /** Toggle confirmation for a participant. */
     public synchronized void toggleConfirm(UUID playerUuid) {
         if (state != State.OPEN || !isParticipant(playerUuid)) return;
-        // Capture any click which was applied before this control click.
-        syncItemsInternal();
+        if (!ensureAllowed(playerUuid)) return;
         if (playerUuid.equals(player1)) player1Confirmed = !player1Confirmed;
         else player2Confirmed = !player2Confirmed;
         if (gui != null) gui.refresh();
@@ -209,7 +210,7 @@ public class TradeSession {
         }
     }
 
-    /** Called before a vanilla click/drag is applied to invalidate countdown. */
+    /** Called before an offer interaction to invalidate countdown. */
     public synchronized void noteOfferInteraction(UUID playerUuid) {
         if (state == State.OPEN && isParticipant(playerUuid)) resetConfirmations();
     }
@@ -258,8 +259,7 @@ public class TradeSession {
         if (state != State.OPEN || !player1Confirmed || !player2Confirmed) return;
         cancelCountdown();
 
-        // A delayed click synchronizer may not have run yet. If live data
-        // differs from the confirmed snapshot, require fresh confirmation.
+        // Defensively verify the escrow in case another plugin changed the GUI.
         if (syncItemsInternal()) return;
 
         Player p1 = Bukkit.getPlayer(player1);
@@ -272,6 +272,10 @@ public class TradeSession {
             auditTrade("CANCELLED", "player_offline", balance1, balance2,
                     balance1, balance2, balance1, balance2, offers, true, false, false);
             cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.player_offline"));
+            return;
+        }
+        if (isRestrictedGameMode(p1) || isRestrictedGameMode(p2)) {
+            cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.restricted_gamemode"));
             return;
         }
         EconomyData eco = manager.getPlugin().getEconomy();
@@ -635,6 +639,7 @@ public class TradeSession {
                                              InventoryAction action, ClickType clickType) {
         if (state != State.OPEN || player == null || !isParticipant(player.getUniqueId())) return true;
         UUID uuid = player.getUniqueId();
+        if (!ensureAllowed(uuid)) return true;
         // A double click initiated in the player's lower inventory can still
         // collect matching stacks from the top inventory. Never let it touch
         // the counterparty's escrow. Creative cloning and unknown actions are
@@ -649,9 +654,10 @@ public class TradeSession {
             return true;
         }
         if (!isPlayerSlot(uuid, rawSlot)) return true;
-        // These actions can collect the other side or duplicate creative stacks.
-        resetConfirmations();
-        return false;
+        // Offer slots are always cancelled and updated synchronously below.
+        // This removes Bukkit's post-event mutation window before confirmation.
+        applyOfferClick(player, rawSlot, cursor, clickType);
+        return true;
     }
 
     private boolean isControlSlot(UUID playerUuid, int rawSlot) {
@@ -678,7 +684,7 @@ public class TradeSession {
         else if (rawSlot == subSlot) removeMoney(playerUuid, 10);
     }
 
-    /** Synchronize cached snapshots after Bukkit applies a click/drag. */
+    /** Synchronize cached snapshots after an external inventory modification. */
     public synchronized void syncItems() {
         if (state != State.OPEN || gui == null || gui.getInventory() == null) return;
         syncItemsInternal();
@@ -707,6 +713,80 @@ public class TradeSession {
             if (gui != null) gui.refresh();
         }
         return changed;
+    }
+
+    private void applyOfferClick(Player player, int rawSlot, ItemStack cursor, ClickType clickType) {
+        // Shift, number-key, double-click and creative inventory actions are
+        // deliberately unsupported: accepting any of them would require
+        // reproducing multiple inventory mutations atomically.
+        if (clickType == null || clickType.isShiftClick()
+                || (!clickType.isLeftClick() && !clickType.isRightClick())) {
+            return;
+        }
+        Inventory inventory = gui == null ? null : gui.getInventory();
+        int index = getItemIndex(player.getUniqueId(), rawSlot);
+        if (inventory == null || index < 0) return;
+
+        ItemStack slot = copyOrNull(inventory.getItem(rawSlot));
+        ItemStack held = copyOrNull(cursor);
+        boolean rightClick = clickType.isRightClick();
+
+        if (held == null) {
+            if (slot == null) return;
+            if (rightClick) {
+                int taken = (slot.getAmount() + 1) / 2;
+                held = slot.clone();
+                held.setAmount(taken);
+                slot.setAmount(slot.getAmount() - taken);
+                slot = copyOrNull(slot);
+            } else {
+                held = slot;
+                slot = null;
+            }
+        } else if (slot == null) {
+            if (rightClick) {
+                slot = held.clone();
+                slot.setAmount(1);
+                held.setAmount(held.getAmount() - 1);
+                held = copyOrNull(held);
+            } else {
+                slot = held;
+                held = null;
+            }
+        } else if (slot.isSimilar(held)) {
+            int space = Math.max(0, slot.getMaxStackSize() - slot.getAmount());
+            int moved = rightClick ? Math.min(1, space) : Math.min(space, held.getAmount());
+            if (moved == 0) return;
+            slot.setAmount(slot.getAmount() + moved);
+            held.setAmount(held.getAmount() - moved);
+            held = copyOrNull(held);
+        } else {
+            ItemStack swap = slot;
+            slot = held;
+            held = swap;
+        }
+
+        resetConfirmations();
+        inventory.setItem(rawSlot, slot);
+        ItemStack[] cache = player.getUniqueId().equals(player1) ? player1Items : player2Items;
+        cache[index] = copyOrNull(slot);
+        player.setItemOnCursor(held == null ? Items.empty() : held);
+        if (gui != null) gui.refresh();
+    }
+
+    private boolean ensureAllowed(UUID playerUuid) {
+        Player player = Bukkit.getPlayer(playerUuid);
+        if (!isRestrictedGameMode(player)) return true;
+        manager.getPlugin().sendMessage(player,
+                manager.getPlugin().trc("trade.error.restricted_gamemode", NamedTextColor.RED));
+        cancelAndReturnItems(manager.getPlugin().tr("trade.cancel.restricted_gamemode"));
+        return false;
+    }
+
+    private boolean isRestrictedGameMode(Player player) {
+        return player != null
+                && manager.getPlugin().getConfig().getBoolean("trade.block-creative-and-spectator", true)
+                && (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR);
     }
 
     private OfferSnapshot currentOffers() {

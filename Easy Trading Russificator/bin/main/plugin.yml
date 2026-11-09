@@ -1,0 +1,10 @@
+name: EasyTradingRussificator
+version: '${version}'
+main: com.easytrading.russificator.EasyTradingRussificatorPlugin
+api-version: '1.21'
+folia-supported: true
+description: Official Russian localization addon for EasyTrading on Paper/Folia 1.21.x
+authors:
+  - EasyTrading
+depend:
+  - EasyTrading

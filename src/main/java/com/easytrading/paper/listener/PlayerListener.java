@@ -7,6 +7,7 @@ import com.easytrading.paper.gui.PurchaseSetupGui;
 import com.easytrading.paper.trade.TradeManager;
 import com.easytrading.paper.trade.TradeSession;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -14,17 +15,48 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryCreativeEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.ItemStack;
 
 public class PlayerListener implements Listener {
     private final EasyTradingPlugin plugin;
 
     public PlayerListener(EasyTradingPlugin plugin) {
         this.plugin = plugin;
+    }
+
+    /** Mark items spawned or moved by Creative inventory actions. */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onCreativeInventoryClick(InventoryCreativeEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)
+                || player.getGameMode() != GameMode.CREATIVE
+                || !plugin.isCreativeItemBlockingEnabled()) return;
+        event.setCursor(plugin.markCreativeOrigin(event.getCursor()));
+        event.setCurrentItem(plugin.markCreativeOrigin(event.getCurrentItem()));
+    }
+
+    /**
+     * Mark every carried item when leaving Creative. This closes routes such
+     * as saved hotbars or container transfers that do not create a new item
+     * through the Creative palette event.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onLeaveCreative(PlayerGameModeChangeEvent event) {
+        Player player = event.getPlayer();
+        if (player.getGameMode() != GameMode.CREATIVE || event.getNewGameMode() == GameMode.CREATIVE
+                || !plugin.isCreativeItemBlockingEnabled()) return;
+        ItemStack[] contents = player.getInventory().getContents();
+        for (int slot = 0; slot < contents.length; slot++) {
+            contents[slot] = plugin.markCreativeOrigin(contents[slot]);
+        }
+        player.getInventory().setContents(contents);
+        player.setItemOnCursor(plugin.markCreativeOrigin(player.getItemOnCursor()));
     }
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -45,11 +77,6 @@ public class PlayerListener implements Listener {
 
             if (shouldCancel) {
                 event.setCancelled(true);
-            } else if (isTopInventory && session.isPlayerSlot(player.getUniqueId(), event.getRawSlot())) {
-                // Bukkit mutates the inventory after this event. Always defer
-                // the snapshot by one tick; runPlayer() may execute inline on
-                // Bukkit and would capture the pre-click contents.
-                plugin.getSchedulerAdapter().runPlayerLater(player, session::syncItems, 1L);
             } else if (!isTopInventory && event.isShiftClick()) {
                 // Shift-click from player inventory — block it (prevent complexity)
                 event.setCancelled(true);
@@ -82,28 +109,18 @@ public class PlayerListener implements Listener {
     public void onInventoryDrag(InventoryDragEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        // Block dragging in trade GUI
+        // Dragging into an escrow slot would be a multi-slot vanilla mutation
+        // after this event. Block it instead of deferring a snapshot.
         TradeManager tradeManager = plugin.getTradeManager();
         TradeSession session = tradeManager.getSession(player.getUniqueId());
         if (session != null && session.getGui() != null
                 && event.getInventory().equals(session.getGui().getInventory())) {
-            // Only allow if all dragged slots are in the player's own offer area
             int invSize = event.getInventory().getSize();
             for (int slot : event.getRawSlots()) {
                 if (slot < invSize) {
-                    if (!session.isPlayerSlot(player.getUniqueId(), slot)) {
-                        event.setCancelled(true);
-                        return;
-                    }
+                    event.setCancelled(true);
+                    return;
                 }
-            }
-            boolean changedOffer = event.getRawSlots().stream()
-                    .anyMatch(slot -> slot < invSize && session.isPlayerSlot(player.getUniqueId(), slot));
-            if (changedOffer) {
-                // Invalidate confirmations before the drag is applied, then
-                // read the resulting offer slots on the next tick.
-                session.noteOfferInteraction(player.getUniqueId());
-                plugin.getSchedulerAdapter().runPlayerLater(player, session::syncItems, 1L);
             }
         }
     }

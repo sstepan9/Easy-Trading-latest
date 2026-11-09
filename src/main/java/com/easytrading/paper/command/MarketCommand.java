@@ -159,6 +159,10 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             plugin.sendMessage(player, plugin.trc("error.hold_item_in_hand", NamedTextColor.RED));
             return true;
         }
+        if (plugin.mustBlockMarketSale(player, inHand)) {
+            plugin.sendMessage(player, plugin.trc("error.creative_item_not_allowed", NamedTextColor.RED));
+            return true;
+        }
 
         String itemId = MarketBankConfig.toMinecraftId(inHand.getType());
         MarketBankConfig bankConfig = plugin.getBankConfig();
@@ -297,6 +301,10 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         ItemStack inHand = player.getInventory().getItemInMainHand();
         if (Items.isEmpty(inHand)) {
             plugin.sendMessage(player, plugin.trc("error.hold_item_in_hand", NamedTextColor.RED));
+            return true;
+        }
+        if (plugin.mustBlockMarketSale(player, inHand)) {
+            plugin.sendMessage(player, plugin.trc("error.creative_item_not_allowed", NamedTextColor.RED));
             return true;
         }
 

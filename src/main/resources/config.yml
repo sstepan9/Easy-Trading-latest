@@ -1,0 +1,10 @@
+# Security settings for direct player-to-player trades.
+trade:
+  # When enabled, players in Creative or Spectator cannot request, accept, or
+  # take part in a direct trade. Disable only on servers where that is intended.
+  block-creative-and-spectator: true
+
+market:
+  # Mark items handled in Creative and reject them from /market sell and
+  # /market sellto. Disable only if your server intentionally allows this.
+  block-creative-items: true

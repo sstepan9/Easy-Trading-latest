@@ -16,11 +16,15 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -36,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class EasyTradingPlugin extends JavaPlugin {
 
     private static EasyTradingPlugin instance;
+    private NamespacedKey creativeOriginKey;
 
     private EconomyData economy;
     private MarketData marketData;
@@ -74,6 +79,8 @@ public class EasyTradingPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         instance = this;
+        saveDefaultConfig();
+        creativeOriginKey = new NamespacedKey(this, "creative-origin");
         Path dataFolder = getDataFolder().toPath();
         try {
             Files.createDirectories(dataFolder);
@@ -81,8 +88,8 @@ public class EasyTradingPlugin extends JavaPlugin {
             getLogger().severe("Could not create data folder: " + e);
         }
 
-        economy = new EconomyData(dataFolder);
-        marketData = new MarketData(dataFolder);
+        economy = new EconomyData(dataFolder, getLogger());
+        marketData = new MarketData(dataFolder, getLogger());
         marketConfig = new MarketConfig(dataFolder);
         bankConfig = new MarketBankConfig(dataFolder);
         bankState = new MarketBankState(dataFolder);
@@ -575,6 +582,34 @@ public class EasyTradingPlugin extends JavaPlugin {
         pendingPurchaseOrders.put(player.getUniqueId(), order);
     }
 
+    /** Whether Creative-origin markers are enforced for market and bank sales. */
+    public boolean isCreativeItemBlockingEnabled() {
+        return getConfig().getBoolean("market.block-creative-items", true);
+    }
+
+    /** Return a copy marked as having passed through a Creative-mode inventory. */
+    public ItemStack markCreativeOrigin(ItemStack stack) {
+        if (Items.isEmpty(stack) || creativeOriginKey == null) return stack;
+        ItemStack marked = stack.clone();
+        ItemMeta meta = marked.getItemMeta();
+        meta.getPersistentDataContainer().set(creativeOriginKey, PersistentDataType.BYTE, (byte) 1);
+        marked.setItemMeta(meta);
+        return marked;
+    }
+
+    public boolean isCreativeOrigin(ItemStack stack) {
+        if (!isCreativeItemBlockingEnabled() || Items.isEmpty(stack) || creativeOriginKey == null) return false;
+        ItemMeta meta = stack.getItemMeta();
+        Byte marker = meta.getPersistentDataContainer().get(creativeOriginKey, PersistentDataType.BYTE);
+        return marker != null && marker == (byte) 1;
+    }
+
+    public boolean mustBlockMarketSale(Player player, ItemStack stack) {
+        return isCreativeItemBlockingEnabled()
+                && (isCreativeOrigin(stack) || (player != null
+                && (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR)));
+    }
+
     // ── HUD ──
 
     public void setHudHidden(Player player, boolean hidden) {
@@ -1028,6 +1063,10 @@ public class EasyTradingPlugin extends JavaPlugin {
             sendMessage(player, trc("error.item_changed_cancelled", NamedTextColor.RED));
             return;
         }
+        if (mustBlockMarketSale(player, inHand) || isCreativeOrigin(pending.stack)) {
+            sendMessage(player, trc("error.creative_item_not_allowed", NamedTextColor.RED));
+            return;
+        }
 
         marketConfig.ensureLoaded();
 
@@ -1167,6 +1206,15 @@ public class EasyTradingPlugin extends JavaPlugin {
                     resource.limit(), 0,
                     economy.get(player.getUniqueId()), economy.get(player.getUniqueId()),
                     "REJECTED", "item_changed");
+            return;
+        }
+        if (mustBlockMarketSale(player, inHand) || isCreativeOrigin(pending.stack)) {
+            sendMessage(player, trc("error.creative_item_not_allowed", NamedTextColor.RED));
+            MarketBankConfig.logTrade(getDataFolder().toPath(), player, "sellto", pending.itemId, pending.itemName,
+                    pending.requested, inHand.getAmount(), 0, pending.price, 0L,
+                    resource.limit(), 0,
+                    economy.get(player.getUniqueId()), economy.get(player.getUniqueId()),
+                    "REJECTED", "creative_origin");
             return;
         }
 

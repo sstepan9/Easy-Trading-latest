@@ -6,6 +6,7 @@ import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 
 import java.util.Map;
@@ -44,12 +45,38 @@ public class TradeManager {
         return plugin;
     }
 
+    /** Whether the server configuration excludes this game mode from direct trades. */
+    public boolean isRestrictedGameMode(Player player) {
+        if (player == null || !plugin.getConfig().getBoolean("trade.block-creative-and-spectator", true)) {
+            return false;
+        }
+        return player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR;
+    }
+
+    public boolean canTrade(Player player) {
+        return player != null && player.isOnline() && !isRestrictedGameMode(player);
+    }
+
+    private void sendRestrictedModeMessage(Player player) {
+        if (player != null) {
+            plugin.sendMessage(player, plugin.trc("trade.error.restricted_gamemode", NamedTextColor.RED));
+        }
+    }
+
     /**
      * Send a trade request from sender to target.
      */
     public void sendRequest(Player sender, Player target) {
         if (sender == null || target == null || !sender.isOnline() || !target.isOnline()
                 || sender.getUniqueId().equals(target.getUniqueId())) {
+            return;
+        }
+        if (!canTrade(sender)) {
+            sendRestrictedModeMessage(sender);
+            return;
+        }
+        if (!canTrade(target)) {
+            plugin.sendMessage(sender, plugin.trc("trade.error.target_restricted_gamemode", NamedTextColor.RED));
             return;
         }
         UUID senderUuid = sender.getUniqueId();
@@ -115,6 +142,10 @@ public class TradeManager {
         if (target == null || !target.isOnline()) {
             return;
         }
+        if (!canTrade(target)) {
+            sendRestrictedModeMessage(target);
+            return;
+        }
         UUID targetUuid = target.getUniqueId();
         TradeRequest request = pendingRequests.remove(targetUuid);
 
@@ -132,6 +163,10 @@ public class TradeManager {
         Player sender = Bukkit.getPlayer(request.getSender());
         if (sender == null || !sender.isOnline()) {
             plugin.sendMessage(target, plugin.trc("trade.error.requester_offline", NamedTextColor.RED));
+            return;
+        }
+        if (!canTrade(sender)) {
+            plugin.sendMessage(target, plugin.trc("trade.error.target_restricted_gamemode", NamedTextColor.RED));
             return;
         }
 
@@ -172,6 +207,11 @@ public class TradeManager {
     private void startSession(Player player1, Player player2) {
         if (player1 == null || player2 == null || !player1.isOnline() || !player2.isOnline()
                 || player1.getUniqueId().equals(player2.getUniqueId())) {
+            return;
+        }
+        if (!canTrade(player1) || !canTrade(player2)) {
+            if (!canTrade(player1)) sendRestrictedModeMessage(player1);
+            if (!canTrade(player2)) sendRestrictedModeMessage(player2);
             return;
         }
         TradeSession session = new TradeSession(this, player1.getUniqueId(), player2.getUniqueId());

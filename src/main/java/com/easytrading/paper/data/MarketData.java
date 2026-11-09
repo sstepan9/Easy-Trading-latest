@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.*;
+import java.util.logging.Logger;
 
 /**
  * Market listings – P2P trading.
@@ -63,9 +64,15 @@ public class MarketData {
     private int nextPurchaseOrderId = 1;
     private long totalSales = 0L;
     private final Path file;
+    private final Logger logger;
 
     public MarketData(Path dataFolder) {
+        this(dataFolder, Logger.getLogger(MarketData.class.getName()));
+    }
+
+    public MarketData(Path dataFolder, Logger logger) {
         this.file = dataFolder.resolve("market.json");
+        this.logger = Objects.requireNonNull(logger, "logger");
         load();
     }
 
@@ -277,9 +284,10 @@ public class MarketData {
                         if (id <= 0 || price <= 0 || !isValidListingStack(stack)) continue;
                         Listing l = new Listing(id, seller, stack, price, createdAt, promoted);
                         listings.put(id, l);
-                    } catch (Exception ignored) {
+                    } catch (Exception entryFailure) {
                         // One corrupt entry must not prevent the remaining
                         // listings from loading.
+                        logger.warning("Skipping corrupt market listing: " + entryFailure.getMessage());
                     }
                 }
             }
@@ -305,8 +313,9 @@ public class MarketData {
                         if (id <= 0 || totalPrice <= 0 || !isValidStack(stack)) continue;
                         PurchaseOrder order = new PurchaseOrder(id, buyer, stack, totalPrice, createdAt);
                         purchaseOrders.put(id, order);
-                    } catch (Exception ignored) {
+                    } catch (Exception entryFailure) {
                         // Skip only the malformed order and continue loading.
+                        logger.warning("Skipping corrupt market purchase order: " + entryFailure.getMessage());
                     }
                 }
             }
@@ -321,7 +330,12 @@ public class MarketData {
                 nextPurchaseOrderId = maxOrderId == Integer.MAX_VALUE ? Integer.MAX_VALUE : maxOrderId + 1;
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            listings.clear();
+            purchaseOrders.clear();
+            nextId = 1;
+            nextPurchaseOrderId = 1;
+            totalSales = 0L;
+            DataFileUtil.backupCorrupted(file, logger, e);
         }
     }
 
@@ -331,8 +345,10 @@ public class MarketData {
             try {
                 byte[] bytes = Base64.getDecoder().decode(obj.get("itemBytes").getAsString());
                 decoded = Items.deserialize(bytes);
-            } catch (Exception ignored) {
+            } catch (Exception decodeFailure) {
                 // Fall back to legacy material/count fields if itemBytes came from an older format.
+                logger.warning("Could not decode persisted market item; using legacy material/count: "
+                        + decodeFailure.getMessage());
             }
         }
 
@@ -410,7 +426,7 @@ public class MarketData {
             root.add("purchaseOrders", purchaseArr);
             DataFileUtil.writeStringAtomic(file, GSON.toJson(root));
         } catch (IOException e) {
-            e.printStackTrace();
+            logger.warning("Could not save market data: " + e.getMessage());
         }
     }
 }
