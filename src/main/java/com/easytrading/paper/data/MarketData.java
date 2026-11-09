@@ -19,6 +19,7 @@ import java.util.logging.Logger;
  */
 public class MarketData {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    public static final int MAX_PURCHASE_ORDER_AMOUNT = 128;
 
     public static class Listing {
         public final int id;
@@ -45,14 +46,18 @@ public class MarketData {
     public static class PurchaseOrder {
         public final int id;
         public final UUID buyer;
+        /** A one-item template used for item matching and persistence. */
         public final ItemStack stack;
+        /** Requested count, stored separately so it always respects the vanilla stack limit. */
+        public final int amount;
         public final long totalPrice;
         public final long createdAt;
 
-        public PurchaseOrder(int id, UUID buyer, ItemStack stack, long totalPrice, long createdAt) {
+        public PurchaseOrder(int id, UUID buyer, ItemStack stack, int amount, long totalPrice, long createdAt) {
             this.id = id;
             this.buyer = buyer;
-            this.stack = stack;
+            this.stack = singleItem(stack);
+            this.amount = amount;
             this.totalPrice = totalPrice;
             this.createdAt = createdAt;
         }
@@ -100,8 +105,8 @@ public class MarketData {
         return Optional.ofNullable(listings.get(id));
     }
 
-    public synchronized PurchaseOrder addPurchaseOrder(UUID buyer, ItemStack stack, long totalPrice, long createdAt) {
-        if (buyer == null || !isValidStack(stack)) {
+    public synchronized PurchaseOrder addPurchaseOrder(UUID buyer, ItemStack stack, int amount, long totalPrice, long createdAt) {
+        if (buyer == null || !isValidStack(stack) || amount < 1 || amount > getPurchaseOrderAmountLimit(stack)) {
             throw new IllegalArgumentException("Purchase order buyer/item is invalid");
         }
         if (totalPrice <= 0) {
@@ -111,7 +116,7 @@ public class MarketData {
             throw new IllegalStateException("Purchase order ID space exhausted");
         }
         int id = nextPurchaseOrderId++;
-        PurchaseOrder order = new PurchaseOrder(id, buyer, stack.clone(), totalPrice, createdAt);
+        PurchaseOrder order = new PurchaseOrder(id, buyer, stack, amount, totalPrice, createdAt);
         purchaseOrders.put(id, order);
         return order;
     }
@@ -300,6 +305,7 @@ public class MarketData {
                         UUID buyer = UUID.fromString(obj.get("buyer").getAsString());
                         long createdAt = obj.has("createdAt") ? obj.get("createdAt").getAsLong() : 0L;
                         ItemStack stack = readItemStack(obj);
+                        int amount = obj.has("amount") ? obj.get("amount").getAsInt() : stack.getAmount();
                         long totalPrice;
                         if (obj.has("totalPrice")) {
                             totalPrice = obj.get("totalPrice").getAsLong();
@@ -310,8 +316,9 @@ public class MarketData {
                         } else {
                             totalPrice = 0L;
                         }
-                        if (id <= 0 || totalPrice <= 0 || !isValidStack(stack)) continue;
-                        PurchaseOrder order = new PurchaseOrder(id, buyer, stack, totalPrice, createdAt);
+                        if (id <= 0 || totalPrice <= 0 || amount < 1
+                                || amount > getPurchaseOrderAmountLimit(stack) || !isValidStack(stack)) continue;
+                        PurchaseOrder order = new PurchaseOrder(id, buyer, stack, amount, totalPrice, createdAt);
                         purchaseOrders.put(id, order);
                     } catch (Exception entryFailure) {
                         // Skip only the malformed order and continue loading.
@@ -383,7 +390,22 @@ public class MarketData {
 
     private static boolean isValidPurchaseOrder(PurchaseOrder order) {
         return order != null && order.id > 0 && order.buyer != null
-                && order.totalPrice > 0 && isValidStack(order.stack);
+                && order.totalPrice > 0 && order.amount >= 1
+                && order.amount <= getPurchaseOrderAmountLimit(order.stack)
+                && isValidStack(order.stack) && order.stack.getAmount() == 1;
+    }
+
+    public static int getPurchaseOrderAmountLimit(ItemStack stack) {
+        if (stack == null || stack.getType().isAir()) {
+            return 0;
+        }
+        return Math.min(MAX_PURCHASE_ORDER_AMOUNT, Math.max(1, stack.getMaxStackSize()));
+    }
+
+    private static ItemStack singleItem(ItemStack stack) {
+        ItemStack single = stack.clone();
+        single.setAmount(1);
+        return single;
     }
 
     public synchronized void save() {
@@ -417,10 +439,11 @@ public class MarketData {
                 obj.addProperty("buyer", order.buyer.toString());
                 obj.addProperty("totalPrice", order.totalPrice);
                 obj.addProperty("createdAt", order.createdAt);
+                obj.addProperty("amount", order.amount);
                 byte[] bytes = Items.serialize(order.stack);
                 obj.addProperty("itemBytes", Base64.getEncoder().encodeToString(bytes));
                 obj.addProperty("material", order.stack.getType().name());
-                obj.addProperty("count", order.stack.getAmount());
+                obj.addProperty("count", order.amount);
                 purchaseArr.add(obj);
             }
             root.add("purchaseOrders", purchaseArr);

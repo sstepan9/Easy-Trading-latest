@@ -186,10 +186,17 @@ public class PlayerListener implements Listener {
     @EventHandler(priority = EventPriority.HIGH)
     public void onAsyncChat(AsyncPlayerChatEvent event) {
         Player player = event.getPlayer();
-        if (plugin.hasPendingPurchaseBlockSearchPrompt(player)) {
+        if (plugin.hasPendingPurchaseItemSearchPrompt(player)) {
             event.setCancelled(true);
             String message = event.getMessage();
-            plugin.getSchedulerAdapter().runPlayer(player, () -> plugin.handlePendingPurchaseBlockSearchPrompt(player, message));
+            plugin.getSchedulerAdapter().runPlayer(player, () -> plugin.handlePendingPurchaseItemSearchPrompt(player, message));
+            return;
+        }
+
+        if (plugin.hasPendingPurchaseAmountPrompt(player)) {
+            event.setCancelled(true);
+            String message = event.getMessage();
+            plugin.getSchedulerAdapter().runPlayer(player, () -> plugin.handlePendingPurchaseAmountPrompt(player, message));
             return;
         }
 

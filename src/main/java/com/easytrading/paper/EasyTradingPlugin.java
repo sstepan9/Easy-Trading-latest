@@ -54,7 +54,8 @@ public class EasyTradingPlugin extends JavaPlugin {
     private final Map<UUID, PendingSale> pendingSales = new ConcurrentHashMap<>();
     private final Map<UUID, PendingBankTrade> pendingBank = new ConcurrentHashMap<>();
     private final Map<UUID, PendingPurchaseOrder> pendingPurchaseOrders = new ConcurrentHashMap<>();
-    private final Map<UUID, PurchaseBlockSearchPrompt> pendingPurchaseBlockSearchPrompts = new ConcurrentHashMap<>();
+    private final Map<UUID, PurchaseItemSearchPrompt> pendingPurchaseItemSearchPrompts = new ConcurrentHashMap<>();
+    private final Map<UUID, PurchaseAmountPrompt> pendingPurchaseAmountPrompts = new ConcurrentHashMap<>();
     private final Map<UUID, PurchaseTotalPricePrompt> pendingPurchaseTotalPricePrompts = new ConcurrentHashMap<>();
     private final Map<UUID, MarketFilterPrompt> pendingMarketPrompts = new ConcurrentHashMap<>();
     private final Map<UUID, MarketGui> openMarketGuis = new ConcurrentHashMap<>();
@@ -71,6 +72,7 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     private static final long PENDING_TIMEOUT_MS = 5 * 60 * 1000L;
     private static final Set<String> CANCEL_KEYWORDS = Set.of("cancel", "отмена", "отменить");
+    private static final Set<String> BACK_KEYWORDS = Set.of("back", "назад");
     private static final Set<String> CLEAR_KEYWORDS = Set.of("clear", "очистить", "сброс", "reset");
     private PlatformScheduler.TaskHandle saveTask;
     private PlatformScheduler.TaskHandle cleanupTask;
@@ -247,7 +249,8 @@ public class EasyTradingPlugin extends JavaPlugin {
         pendingSales.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
         pendingBank.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
         pendingPurchaseOrders.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
-        pendingPurchaseBlockSearchPrompts.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
+        pendingPurchaseItemSearchPrompts.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
+        pendingPurchaseAmountPrompts.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
         pendingPurchaseTotalPricePrompts.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
     }
 
@@ -275,7 +278,8 @@ public class EasyTradingPlugin extends JavaPlugin {
         pendingSales.remove(uuid);
         pendingBank.remove(uuid);
         pendingPurchaseOrders.remove(uuid);
-        pendingPurchaseBlockSearchPrompts.remove(uuid);
+        pendingPurchaseItemSearchPrompts.remove(uuid);
+        pendingPurchaseAmountPrompts.remove(uuid);
         pendingPurchaseTotalPricePrompts.remove(uuid);
         pendingMarketPrompts.remove(uuid);
         openMarketGuis.remove(uuid);
@@ -326,11 +330,11 @@ public class EasyTradingPlugin extends JavaPlugin {
     }
 
     public void openPurchaseSetup(Player player) {
-        openPurchaseSetup(player, PurchaseSetupGui.Stage.BLOCK, Material.STONE, 64, null);
+        promptPurchaseItemSearch(player);
     }
 
-    public void openPurchaseSetup(Player player, PurchaseSetupGui.Stage stage, Material selectedMaterial, int amount, String searchQuery) {
-        PurchaseSetupGui gui = new PurchaseSetupGui(this, player, stage, selectedMaterial, amount, searchQuery);
+    public void openPurchaseSetup(Player player, String query) {
+        PurchaseSetupGui gui = new PurchaseSetupGui(this, player, query);
         registerPurchaseSetupGui(player, gui);
         gui.open();
     }
@@ -367,8 +371,12 @@ public class EasyTradingPlugin extends JavaPlugin {
         return pendingPurchaseTotalPricePrompts.containsKey(player.getUniqueId());
     }
 
-    public boolean hasPendingPurchaseBlockSearchPrompt(Player player) {
-        return pendingPurchaseBlockSearchPrompts.containsKey(player.getUniqueId());
+    public boolean hasPendingPurchaseItemSearchPrompt(Player player) {
+        return pendingPurchaseItemSearchPrompts.containsKey(player.getUniqueId());
+    }
+
+    public boolean hasPendingPurchaseAmountPrompt(Player player) {
+        return pendingPurchaseAmountPrompts.containsKey(player.getUniqueId());
     }
 
     public void handlePendingMarketPrompt(Player player, String input) {
@@ -410,27 +418,70 @@ public class EasyTradingPlugin extends JavaPlugin {
         openMarket(player, prompt.viewOptions().withSellerFilter(sellerMatch.uuid(), sellerMatch.name()));
     }
 
-    public void promptPurchaseBlockSearch(Player player, Material selectedMaterial, int amount, String currentSearchQuery) {
-        pendingPurchaseBlockSearchPrompts.put(player.getUniqueId(),
-                new PurchaseBlockSearchPrompt(selectedMaterial, amount, currentSearchQuery, System.currentTimeMillis()));
-        player.closeInventory();
-        sendMessage(player, trc("prompt.purchase.block_search", NamedTextColor.YELLOW));
+    public void promptPurchaseItemSearch(Player player) {
+        promptPurchaseItemSearch(player, null);
     }
 
-    public void handlePendingPurchaseBlockSearchPrompt(Player player, String input) {
-        PurchaseBlockSearchPrompt prompt = pendingPurchaseBlockSearchPrompts.remove(player.getUniqueId());
+    public void promptPurchaseItemSearch(Player player, String previousQuery) {
+        pendingPurchaseItemSearchPrompts.put(player.getUniqueId(), new PurchaseItemSearchPrompt(System.currentTimeMillis()));
+        player.closeInventory();
+        String key = previousQuery == null || previousQuery.isBlank()
+                ? "prompt.purchase.item_search" : "prompt.purchase.item_search_again";
+        sendMessage(player, trc(key, NamedTextColor.YELLOW, previousQuery));
+    }
+
+    public void handlePendingPurchaseItemSearchPrompt(Player player, String input) {
+        PurchaseItemSearchPrompt prompt = pendingPurchaseItemSearchPrompts.remove(player.getUniqueId());
         if (prompt == null) {
             return;
         }
-
         String normalized = input == null ? "" : input.trim();
-        if (isCancelKeyword(normalized)) {
-            openPurchaseSetup(player, PurchaseSetupGui.Stage.BLOCK, prompt.selectedMaterial(), prompt.amount(), prompt.searchQuery());
+        if (isCancelKeyword(normalized) || normalized.isBlank()) {
+            cancelPurchaseSetup(player);
             return;
         }
+        openPurchaseSetup(player, normalized);
+    }
 
-        String nextQuery = isClearKeyword(normalized) ? null : normalized;
-        openPurchaseSetup(player, PurchaseSetupGui.Stage.BLOCK, prompt.selectedMaterial(), prompt.amount(), nextQuery);
+    public void promptPurchaseAmount(Player player, Material material, String searchQuery) {
+        if (material == null || !material.isItem() || material.isAir()) {
+            promptPurchaseItemSearch(player);
+            return;
+        }
+        int maxAmount = MarketData.getPurchaseOrderAmountLimit(new ItemStack(material));
+        if (maxAmount == 1) {
+            promptPurchaseTotalPrice(player, material, 1, searchQuery);
+            return;
+        }
+        pendingPurchaseAmountPrompts.put(player.getUniqueId(),
+                new PurchaseAmountPrompt(material, searchQuery, System.currentTimeMillis()));
+        player.closeInventory();
+        sendMessage(player, trc("prompt.purchase.amount", NamedTextColor.YELLOW,
+                getLocalization().itemName(material), maxAmount));
+    }
+
+    public void handlePendingPurchaseAmountPrompt(Player player, String input) {
+        PurchaseAmountPrompt prompt = pendingPurchaseAmountPrompts.remove(player.getUniqueId());
+        if (prompt == null) return;
+        String normalized = input == null ? "" : input.trim();
+        if (isCancelKeyword(normalized)) {
+            cancelPurchaseSetup(player);
+            return;
+        }
+        if (isBackKeyword(normalized)) {
+            openPurchaseSetup(player, prompt.searchQuery());
+            return;
+        }
+        final int amount;
+        try {
+            amount = parsePurchaseAmount(normalized, prompt.material());
+        } catch (NumberFormatException ignored) {
+            sendMessage(player, trc("error.invalid_purchase_amount", NamedTextColor.RED,
+                    MarketData.getPurchaseOrderAmountLimit(new ItemStack(prompt.material()))));
+            promptPurchaseAmount(player, prompt.material(), prompt.searchQuery());
+            return;
+        }
+        promptPurchaseTotalPrice(player, prompt.material(), amount, prompt.searchQuery());
     }
 
     public void promptPurchaseTotalPrice(Player player, Material material, int amount, String searchQuery) {
@@ -449,7 +500,15 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         String normalized = input == null ? "" : input.trim();
         if (isCancelKeyword(normalized)) {
-            openPurchaseSetup(player, PurchaseSetupGui.Stage.AMOUNT, prompt.material(), prompt.amount(), prompt.searchQuery());
+            cancelPurchaseSetup(player);
+            return;
+        }
+        if (isBackKeyword(normalized)) {
+            if (MarketData.getPurchaseOrderAmountLimit(new ItemStack(prompt.material())) == 1) {
+                openPurchaseSetup(player, prompt.searchQuery());
+            } else {
+                promptPurchaseAmount(player, prompt.material(), prompt.searchQuery());
+            }
             return;
         }
 
@@ -478,7 +537,7 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         if (economy.get(player.getUniqueId()) < totalPrice) {
             sendMessage(player, trc("error.not_enough_funds_reserve", NamedTextColor.RED, totalPrice));
-            openPurchaseSetup(player, PurchaseSetupGui.Stage.AMOUNT, prompt.material(), prompt.amount(), prompt.searchQuery());
+            promptPurchaseAmount(player, prompt.material(), prompt.searchQuery());
             return;
         }
 
@@ -681,7 +740,9 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public record MarketFilterPrompt(MarketFilterPromptType type, MarketGui.ViewOptions viewOptions) {}
 
-    public record PurchaseBlockSearchPrompt(Material selectedMaterial, int amount, String searchQuery, long createdAt) {}
+    public record PurchaseItemSearchPrompt(long createdAt) {}
+
+    public record PurchaseAmountPrompt(Material material, String searchQuery, long createdAt) {}
 
     public record PurchaseTotalPricePrompt(Material material, int amount, String searchQuery, long createdAt) {}
 
@@ -771,7 +832,8 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
 
         if (pending.stack == null || Items.isEmpty(pending.stack)
-                || pending.stack.getAmount() <= 0 || pending.totalPrice <= 0) {
+                || pending.stack.getAmount() <= 0 || pending.totalPrice <= 0
+                || pending.stack.getAmount() > MarketData.getPurchaseOrderAmountLimit(pending.stack)) {
             sendMessage(player, trc("purchase_order.cannot_complete", NamedTextColor.RED));
             return;
         }
@@ -801,7 +863,7 @@ public class EasyTradingPlugin extends JavaPlugin {
 
         MarketData.PurchaseOrder order;
         try {
-            order = marketData.addPurchaseOrder(player.getUniqueId(), pending.stack,
+            order = marketData.addPurchaseOrder(player.getUniqueId(), pending.stack, pending.stack.getAmount(),
                     pending.totalPrice, System.currentTimeMillis());
         } catch (RuntimeException ex) {
             // Never burn a reservation if publishing the order fails.
@@ -811,7 +873,7 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
         transactionHistory.record(player.getUniqueId(), "PURCHASE_RESERVE", MarketGui.getItemName(order.stack),
-                order.stack.getAmount(), -order.totalPrice, null);
+                order.amount, -order.totalPrice, null);
 
         MarketNotifyData notifyState = marketNotify;
         long version = notifyState.bump();
@@ -820,7 +882,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
 
         sendMessage(player, trc("purchase_order.created", NamedTextColor.GREEN, order.id,
-                MarketGui.getItemName(order.stack), order.stack.getAmount(), order.totalPrice));
+                MarketGui.getItemName(order.stack), order.amount, order.totalPrice));
         marketData.save();
         economy.save();
         transactionHistory.save();
@@ -861,7 +923,7 @@ public class EasyTradingPlugin extends JavaPlugin {
             return false;
         }
         transactionHistory.record(player.getUniqueId(), "PURCHASE_REFUND", MarketGui.getItemName(order.stack),
-                order.stack.getAmount(), order.totalPrice, null);
+                order.amount, order.totalPrice, null);
         sendMessage(player, trc("purchase_order.refunded", NamedTextColor.GREEN, order.totalPrice));
         refreshAllMarketGuis();
         return true;
@@ -886,7 +948,7 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        if (order.stack == null || Items.isEmpty(order.stack) || order.stack.getAmount() <= 0
+        if (order.stack == null || Items.isEmpty(order.stack) || order.amount <= 0
                 || order.totalPrice <= 0) {
             marketData.putBackPurchaseOrder(order);
             sendMessage(seller, trc("purchase_order.cannot_complete", NamedTextColor.RED));
@@ -894,13 +956,13 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
 
         int available = countMatchingRequestedItems(seller, order.stack);
-        if (available < order.stack.getAmount()) {
+        if (available < order.amount) {
             marketData.putBackPurchaseOrder(order);
-            sendMessage(seller, trc("purchase_order.need_matching_items", NamedTextColor.RED, order.stack.getAmount()));
+            sendMessage(seller, trc("purchase_order.need_matching_items", NamedTextColor.RED, order.amount));
             return;
         }
 
-        int accepted = order.stack.getAmount();
+        int accepted = order.amount;
         long total = order.totalPrice;
         if (total <= 0) {
             marketData.putBackPurchaseOrder(order);
@@ -1582,6 +1644,52 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public boolean isCancelKeyword(String input) {
         return matchesKeyword(input, CANCEL_KEYWORDS);
+    }
+
+    public boolean isBackKeyword(String input) {
+        return matchesKeyword(input, BACK_KEYWORDS);
+    }
+
+    public void cancelPurchaseSetup(Player player) {
+        UUID uuid = player.getUniqueId();
+        pendingPurchaseItemSearchPrompts.remove(uuid);
+        pendingPurchaseAmountPrompts.remove(uuid);
+        pendingPurchaseTotalPricePrompts.remove(uuid);
+        player.closeInventory();
+        sendMessage(player, trc("purchase_setup.cancelled", NamedTextColor.YELLOW));
+    }
+
+    /** Command equivalent of typing "back" at the active purchase prompt. */
+    public void goBackPurchaseSetup(Player player) {
+        UUID uuid = player.getUniqueId();
+        PurchaseTotalPricePrompt pricePrompt = pendingPurchaseTotalPricePrompts.remove(uuid);
+        if (pricePrompt != null) {
+            if (MarketData.getPurchaseOrderAmountLimit(new ItemStack(pricePrompt.material())) == 1) {
+                openPurchaseSetup(player, pricePrompt.searchQuery());
+            } else {
+                promptPurchaseAmount(player, pricePrompt.material(), pricePrompt.searchQuery());
+            }
+            return;
+        }
+        PurchaseAmountPrompt amountPrompt = pendingPurchaseAmountPrompts.remove(uuid);
+        if (amountPrompt != null) {
+            openPurchaseSetup(player, amountPrompt.searchQuery());
+            return;
+        }
+        PurchaseItemSearchPrompt searchPrompt = pendingPurchaseItemSearchPrompts.remove(uuid);
+        if (searchPrompt != null || getOpenPurchaseSetupGui(player) != null) {
+            promptPurchaseItemSearch(player);
+            return;
+        }
+        sendMessage(player, trc("purchase_setup.nothing_to_go_back", NamedTextColor.YELLOW));
+    }
+
+    private int parsePurchaseAmount(String input, Material material) {
+        int amount = Integer.parseInt(input);
+        if (amount < 1 || amount > MarketData.getPurchaseOrderAmountLimit(new ItemStack(material))) {
+            throw new NumberFormatException();
+        }
+        return amount;
     }
 
     public boolean isClearKeyword(String input) {

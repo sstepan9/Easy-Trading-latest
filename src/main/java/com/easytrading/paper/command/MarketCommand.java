@@ -68,7 +68,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             case "seller" -> handleSeller(player, args);
             case "search" -> handleSearch(player, args);
             case "sell" -> handleSell(player, args);
-            case "pur", "purchase" -> handlePurchase(player);
+            case "pur", "purchase" -> handlePurchase(player, args);
             case "relist" -> handleRelist(player, args);
             case "cancelall" -> handleCancelAll(player);
             case "sellto" -> handleSellTo(player, args);
@@ -205,12 +205,24 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private boolean handlePurchase(Player player) {
+    private boolean handlePurchase(Player player, String[] args) {
         if (plugin.getPendingPurchaseOrder(player) != null) {
             plugin.sendMessage(player, plugin.trc("error.pending_confirmation", NamedTextColor.RED));
             return true;
         }
-        if (plugin.hasPendingPurchaseBlockSearchPrompt(player) || plugin.hasPendingPurchaseTotalPricePrompt(player)) {
+        if (args.length > 1) {
+            String action = args[1].toLowerCase(Locale.ROOT);
+            if (plugin.isCancelKeyword(action)) {
+                plugin.cancelPurchaseSetup(player);
+                return true;
+            }
+            if (plugin.isBackKeyword(action)) {
+                plugin.goBackPurchaseSetup(player);
+                return true;
+            }
+        }
+        if (plugin.getOpenPurchaseSetupGui(player) != null || plugin.hasPendingPurchaseItemSearchPrompt(player)
+                || plugin.hasPendingPurchaseAmountPrompt(player) || plugin.hasPendingPurchaseTotalPricePrompt(player)) {
             plugin.sendMessage(player, plugin.trc("purchase_setup.finish_current", NamedTextColor.RED));
             return true;
         }

@@ -252,7 +252,7 @@ public class MarketGui {
         for (int i = startIndex; i < endIndex; i++) {
             MarketData.PurchaseOrder order = filteredOrders.get(i);
             int available = plugin.countMatchingRequestedItems(viewer, order.stack);
-            boolean canSell = available >= order.stack.getAmount();
+            boolean canSell = available >= order.amount;
 
             ItemStack display = order.stack.clone();
             ItemMeta meta = display.getItemMeta();
@@ -260,7 +260,7 @@ public class MarketGui {
                 List<Component> lore = new ArrayList<>();
                 lore.add(Component.text(plugin.tr("gui.market.order.id", order.id)).color(NamedTextColor.DARK_GRAY));
                 lore.add(Component.text(plugin.tr("gui.market.order.total_price", order.totalPrice)).color(NamedTextColor.GOLD));
-                lore.add(Component.text(plugin.tr("gui.market.order.requested", order.stack.getAmount())).color(NamedTextColor.WHITE));
+                lore.add(Component.text(plugin.tr("gui.market.order.requested", order.amount)).color(NamedTextColor.WHITE));
                 lore.add(Component.text(plugin.tr("gui.market.order.buyer", resolveSellerName(order.buyer))).color(NamedTextColor.AQUA));
                 lore.add(Component.text(plugin.tr("gui.market.order.created", formatAge(order.createdAt))).color(NamedTextColor.GRAY));
                 if (order.buyer.equals(viewer.getUniqueId())) {
@@ -269,7 +269,7 @@ public class MarketGui {
                     lore.add(Component.text(plugin.tr("gui.market.order.enough_items")).color(NamedTextColor.GREEN));
                     lore.add(Component.text(plugin.tr("gui.market.order.sell_hint")).color(NamedTextColor.GREEN));
                 } else {
-                    lore.add(Component.text(plugin.tr("gui.market.order.need_have", order.stack.getAmount(), available))
+                    lore.add(Component.text(plugin.tr("gui.market.order.need_have", order.amount, available))
                             .color(NamedTextColor.RED));
                 }
                 AdventureSupport.lore(meta, lore);
@@ -568,7 +568,7 @@ public class MarketGui {
         int requested = 0;
         for (MarketData.PurchaseOrder order : orders) {
             reserved += order.totalPrice;
-            requested += order.stack.getAmount();
+            requested += order.amount;
         }
         plugin.sendActionBar(viewer, Component.text(plugin.tr(
                 "gui.market.stats.purchasing", reserved, requested, orders.size()
@@ -691,13 +691,13 @@ public class MarketGui {
         }
 
         int available = plugin.countMatchingRequestedItems(seller, order.stack);
-        if (available < order.stack.getAmount()) {
+        if (available < order.amount) {
             plugin.sendMessage(seller, plugin.trc("purchase_order.need_matching_items_fulfill",
-                    NamedTextColor.RED, order.stack.getAmount()));
+                    NamedTextColor.RED, order.amount));
             return;
         }
 
-        int accepted = order.stack.getAmount();
+        int accepted = order.amount;
         long total = order.totalPrice;
         new ConfirmationGui(plugin, seller, ConfirmationGui.Type.SELL_TO_ORDER, order.id,
                 getItemName(order.stack), accepted, total, total,
