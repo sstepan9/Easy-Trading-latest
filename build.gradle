@@ -2,13 +2,14 @@ import java.util.Locale
 
 plugins {
     id 'java'
+    id 'com.gradleup.shadow' version '9.3.1'
 }
 
 group = 'com.easytrading'
 
 def mcVersion = project.findProperty('mc_version') ?: '1.21.x'
 def releasePeriod = project.findProperty('release_period') ?: new Date().format('MM.yy')
-def releaseIteration = project.findProperty('release_iteration') ?: '01'
+def releaseIteration = project.findProperty('release_iteration') ?: '03'
 def modVersion = project.findProperty('mod_version') ?: "${mcVersion}-${releasePeriod}.${releaseIteration}"
 def platformTarget = (project.findProperty('platform_target') ?: 'universal').toString().toLowerCase(Locale.ROOT)
 version = modVersion
@@ -44,6 +45,7 @@ dependencies {
     implementation 'net.kyori:adventure-text-serializer-legacy:4.17.0'
     implementation 'net.kyori:adventure-text-serializer-plain:4.17.0'
     implementation 'net.kyori:adventure-platform-bukkit:4.3.3'
+    implementation 'org.bstats:bstats-bukkit:3.2.1'
 
     // Keep the core trade/economy invariants executable without a server.
     // JUnit is test-only and does not get bundled into the plugin jar.
@@ -64,10 +66,33 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 jar {
+    archiveClassifier.set('plain')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from {
-        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+        configurations.runtimeClasspath
+                .findAll { !it.name.startsWith('bstats-') }
+                .collect { it.isDirectory() ? it : zipTree(it) }
     }
+}
+
+tasks.named('shadowJar') {
+    dependsOn tasks.named('jar')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    archiveClassifier.set('')
+
+    // Preserve the plugin's existing bundled libraries from the plain JAR.
+    from { zipTree(tasks.named('jar').get().archiveFile.get().asFile) }
+
+    configurations = [project.configurations.runtimeClasspath]
+    dependencies {
+        // bStats is the only dependency handled by Shadow and relocated below.
+        exclude { it.moduleGroup != 'org.bstats' }
+    }
+    relocate('org.bstats', 'com.easytrading.paper.libs.bstats')
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('shadowJar')
 }
 
 processResources {

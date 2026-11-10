@@ -5,21 +5,25 @@ import com.easytrading.paper.data.*;
 import com.easytrading.paper.gui.ConfirmationGui;
 import com.easytrading.paper.gui.MarketGui;
 import com.easytrading.paper.gui.PurchaseSetupGui;
+import com.easytrading.paper.gui.PlayerConfigGui;
 import com.easytrading.paper.listener.PlayerListener;
 import com.easytrading.paper.locale.LocalizationManager;
 import com.easytrading.paper.platform.PlatformScheduler;
 import com.easytrading.paper.trade.TradeManager;
+import com.easytrading.paper.update.UpdateChecker;
 import com.easytrading.paper.util.AdventureSupport;
 import com.easytrading.paper.util.Items;
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.milkbowl.vault.economy.Economy;
+import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -50,6 +54,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     private TransactionHistoryData transactionHistory;
     private MarketNotifyData marketNotify;
     private MarketDeliveryData marketDeliveries;
+    private HudPreferencesData hudPreferences;
 
     private final Map<UUID, PendingSale> pendingSales = new ConcurrentHashMap<>();
     private final Map<UUID, PendingBankTrade> pendingBank = new ConcurrentHashMap<>();
@@ -60,6 +65,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     private final Map<UUID, MarketFilterPrompt> pendingMarketPrompts = new ConcurrentHashMap<>();
     private final Map<UUID, MarketGui> openMarketGuis = new ConcurrentHashMap<>();
     private final Map<UUID, PurchaseSetupGui> openPurchaseSetupGuis = new ConcurrentHashMap<>();
+    private final Map<UUID, PlayerConfigGui> openPlayerConfigGuis = new ConcurrentHashMap<>();
     private final Map<UUID, ConfirmationGui> openConfirmations = new ConcurrentHashMap<>();
     private final Set<UUID> hudHidden = ConcurrentHashMap.newKeySet();
     private final Map<UUID, BossBar> playerBossBars = new ConcurrentHashMap<>();
@@ -69,6 +75,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     private AdventureSupport adventure;
     private PlatformScheduler scheduler;
     private LocalizationManager localization;
+    private volatile UpdateChecker.Release availableUpdate;
 
     private static final long PENDING_TIMEOUT_MS = 5 * 60 * 1000L;
     private static final Set<String> CANCEL_KEYWORDS = Set.of("cancel", "отмена", "отменить");
@@ -82,6 +89,8 @@ public class EasyTradingPlugin extends JavaPlugin {
     public void onEnable() {
         instance = this;
         saveDefaultConfig();
+        ensureConfigurationDefaults();
+        new Metrics(this, 35237);
         creativeOriginKey = new NamespacedKey(this, "creative-origin");
         Path dataFolder = getDataFolder().toPath();
         try {
@@ -98,6 +107,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         transactionHistory = new TransactionHistoryData(dataFolder);
         marketNotify = new MarketNotifyData(dataFolder);
         marketDeliveries = new MarketDeliveryData(dataFolder);
+        hudPreferences = new HudPreferencesData(dataFolder);
 
         marketConfig.ensureLoaded();
         bankConfig.ensureLoaded();
@@ -109,6 +119,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         adventure.enable();
         scheduler = new PlatformScheduler(this);
         tradeManager = new TradeManager(this);
+        checkForUpdates();
 
         // Register commands
         MarketCommand cmd = new MarketCommand(this);
@@ -175,12 +186,9 @@ public class EasyTradingPlugin extends JavaPlugin {
             Bukkit.getServicesManager().unregisterAll(this);
         }
 
-        // Remove all BossBars
+        // Remove every balance HUD element owned by this plugin.
         for (Player player : Bukkit.getOnlinePlayers()) {
-            BossBar bar = playerBossBars.remove(player.getUniqueId());
-            if (bar != null) {
-                hideBossBar(player, bar);
-            }
+            clearBalanceHud(player);
         }
         if (adventure != null) {
             adventure.disable();
@@ -198,6 +206,54 @@ public class EasyTradingPlugin extends JavaPlugin {
         marketNotify.save();
         marketDeliveries.save();
         bankConfig.save();
+        hudPreferences.save();
+    }
+
+    private void ensureConfigurationDefaults() {
+        FileConfiguration config = getConfig();
+        boolean changed = false;
+        if (!config.isSet("hud.mode")) {
+            config.set("hud.mode", "tab-footer");
+            changed = true;
+        }
+        if (!config.isSet("hud.number-format")) {
+            config.set("hud.number-format", "grouped");
+            changed = true;
+        }
+        if (!config.isSet("trade.request-mode")) {
+            config.set("trade.request-mode", "all");
+            changed = true;
+        }
+        if (!config.isSet("updates.enabled")) {
+            config.set("updates.enabled", true);
+            changed = true;
+        }
+        if (!config.isSet("updates.notify-admins")) {
+            config.set("updates.notify-admins", true);
+            changed = true;
+        }
+        if (changed) {
+            saveConfig();
+        }
+    }
+
+    private void checkForUpdates() {
+        if (!getConfig().getBoolean("updates.enabled", true)) {
+            return;
+        }
+        String installedVersion = getDescription().getVersion();
+        new UpdateChecker().findNewerRelease(installedVersion).whenComplete((result, failure) -> {
+            if (!isEnabled()) return;
+            if (failure != null) {
+                getLogger().fine("Could not check for EasyTrading updates: " + failure.getMessage());
+                return;
+            }
+            result.ifPresent(update -> {
+                availableUpdate = update;
+                getLogger().warning("A new EasyTrading version is available: " + update.version()
+                        + " (installed: " + installedVersion + "). Download: " + update.pageUrl());
+            });
+        });
     }
 
     private void tickPlayerHud(Player player) {
@@ -209,23 +265,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         bankConfig.ensureLoaded();
 
         UUID uuid = player.getUniqueId();
-        if (!hudHidden.contains(uuid)) {
-            long balance = economy.get(uuid);
-            Component name = trc("hud.balance", NamedTextColor.GOLD, balance);
-            BossBar bar = playerBossBars.get(uuid);
-            if (bar == null) {
-                bar = BossBar.bossBar(name, 1.0f, BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS);
-                playerBossBars.put(uuid, bar);
-                showBossBar(player, bar);
-            } else {
-                bar.name(name);
-            }
-        } else {
-            BossBar bar = playerBossBars.remove(uuid);
-            if (bar != null) {
-                hideBossBar(player, bar);
-            }
-        }
+        renderBalanceHud(player, hudHidden.contains(uuid));
 
         if (marketDeliveries.has(uuid)) {
             deliverQueuedItems(player);
@@ -244,6 +284,103 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
     }
 
+    private void renderBalanceHud(Player player, boolean hidden) {
+        HudMode mode = getPlayerHudMode(player);
+        if (hidden || mode == HudMode.NONE) {
+            clearBalanceHud(player);
+            return;
+        }
+
+        Component balance = Component.text(tr("hud.balance", formatBalance(player, economy.get(player.getUniqueId()))))
+                .color(NamedTextColor.GOLD);
+        if (mode == HudMode.TAB_FOOTER) {
+            removeBossBar(player);
+            // The footer is visible only while the player holds Tab. The
+            // header remains available for server-list plugins to manage.
+            player.setPlayerListFooter("\n" + AdventureSupport.legacy(balance) + "\n");
+            return;
+        }
+
+        player.setPlayerListFooter(null);
+        BossBar bar = playerBossBars.get(player.getUniqueId());
+        if (bar == null) {
+            bar = BossBar.bossBar(balance, 1.0f, BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS);
+            playerBossBars.put(player.getUniqueId(), bar);
+            showBossBar(player, bar);
+        } else {
+            bar.name(balance);
+        }
+    }
+
+    public HudMode getPlayerHudMode(Player player) {
+        if (player != null && hudPreferences != null) {
+            Optional<String> saved = hudPreferences.getHudMode(player.getUniqueId());
+            if (saved.isPresent()) return HudMode.fromConfig(saved.get());
+        }
+        return HudMode.fromConfig(getConfig().getString("hud.mode", "tab-footer"));
+    }
+
+    public void setPlayerHudMode(Player player, HudMode mode) {
+        if (player == null || mode == null || mode == HudMode.NONE) return;
+        hudPreferences.setHudMode(player.getUniqueId(), mode.configValue());
+        hudPreferences.save();
+        renderBalanceHud(player, hudHidden.contains(player.getUniqueId()));
+    }
+
+    public NumberFormatMode getPlayerNumberFormat(Player player) {
+        if (player != null && hudPreferences != null) {
+            Optional<String> saved = hudPreferences.getNumberFormat(player.getUniqueId());
+            if (saved.isPresent()) return NumberFormatMode.fromConfig(saved.get());
+        }
+        return NumberFormatMode.fromConfig(getConfig().getString("hud.number-format", "grouped"));
+    }
+
+    public void setPlayerNumberFormat(Player player, NumberFormatMode format) {
+        if (player == null || format == null) return;
+        hudPreferences.setNumberFormat(player.getUniqueId(), format.configValue());
+        hudPreferences.save();
+        renderBalanceHud(player, hudHidden.contains(player.getUniqueId()));
+    }
+
+    public String formatBalance(Player player, long value) {
+        return getPlayerNumberFormat(player).format(value);
+    }
+
+    public TradeRequestMode getTradeRequestMode(Player player) {
+        if (player != null && hudPreferences != null) {
+            Optional<String> saved = hudPreferences.getTradeRequestMode(player.getUniqueId());
+            if (saved.isPresent()) return TradeRequestMode.fromConfig(saved.get());
+        }
+        return TradeRequestMode.fromConfig(getConfig().getString("trade.request-mode", "all"));
+    }
+
+    public void setTradeRequestMode(Player player, TradeRequestMode mode) {
+        if (player == null || mode == null) return;
+        hudPreferences.setTradeRequestMode(player.getUniqueId(), mode.configValue());
+        hudPreferences.save();
+    }
+
+    public boolean canReceiveTradeRequest(Player target, Player sender) {
+        if (target == null || sender == null) return false;
+        TradeRequestMode mode = getTradeRequestMode(target);
+        if (mode == TradeRequestMode.NONE) return false;
+        if (mode == TradeRequestMode.ALL) return true;
+        if (!target.getWorld().equals(sender.getWorld())) return false;
+        return target.getLocation().distanceSquared(sender.getLocation()) <= (double) mode.radius() * mode.radius();
+    }
+
+    private void clearBalanceHud(Player player) {
+        player.setPlayerListFooter(null);
+        removeBossBar(player);
+    }
+
+    private void removeBossBar(Player player) {
+        BossBar bar = playerBossBars.remove(player.getUniqueId());
+        if (bar != null) {
+            hideBossBar(player, bar);
+        }
+    }
+
     private void cleanupStalePending() {
         long now = System.currentTimeMillis();
         pendingSales.entrySet().removeIf(e -> now - e.getValue().createdAt > PENDING_TIMEOUT_MS);
@@ -258,6 +395,13 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public void onPlayerLogin(Player player) {
         syncBalance(player);
+
+        UpdateChecker.Release update = availableUpdate;
+        if (update != null && getConfig().getBoolean("updates.notify-admins", true)
+                && player.hasPermission("easytrading.admin")) {
+            sendMessage(player, trc("update.available", NamedTextColor.YELLOW,
+                    update.version(), getDescription().getVersion(), update.pageUrl()));
+        }
 
         // Load HUD preference
         // (hudHidden is ephemeral in Paper version; persisted separately if needed)
@@ -284,13 +428,11 @@ public class EasyTradingPlugin extends JavaPlugin {
         pendingMarketPrompts.remove(uuid);
         openMarketGuis.remove(uuid);
         openPurchaseSetupGuis.remove(uuid);
+        openPlayerConfigGuis.remove(uuid);
         openConfirmations.remove(uuid);
         tradeManager.handleDisconnect(player);
         stopPlayerHudTask(player);
-        BossBar bar = playerBossBars.remove(uuid);
-        if (bar != null) {
-            hideBossBar(player, bar);
-        }
+        clearBalanceHud(player);
     }
 
     // ── Balance Sync ──
@@ -327,6 +469,20 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public void registerPurchaseSetupGui(Player player, PurchaseSetupGui gui) {
         openPurchaseSetupGuis.put(player.getUniqueId(), gui);
+    }
+
+    public void openPlayerConfig(Player player) {
+        PlayerConfigGui gui = new PlayerConfigGui(this, player);
+        openPlayerConfigGuis.put(player.getUniqueId(), gui);
+        gui.open();
+    }
+
+    public PlayerConfigGui getOpenPlayerConfigGui(Player player) {
+        return openPlayerConfigGuis.get(player.getUniqueId());
+    }
+
+    public void removePlayerConfigGui(Player player) {
+        openPlayerConfigGuis.remove(player.getUniqueId());
     }
 
     public void openPurchaseSetup(Player player) {
@@ -674,12 +830,10 @@ public class EasyTradingPlugin extends JavaPlugin {
     public void setHudHidden(Player player, boolean hidden) {
         if (hidden) {
             hudHidden.add(player.getUniqueId());
-            BossBar bar = playerBossBars.remove(player.getUniqueId());
-            if (bar != null) {
-                hideBossBar(player, bar);
-            }
+            clearBalanceHud(player);
         } else {
             hudHidden.remove(player.getUniqueId());
+            renderBalanceHud(player, false);
         }
     }
 
@@ -709,6 +863,76 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public boolean isTradeSupported() {
         return !isFolia();
+    }
+
+    public enum HudMode {
+        TAB_FOOTER,
+        BOSS_BAR,
+        NONE;
+
+        public String configValue() {
+            return switch (this) {
+                case TAB_FOOTER -> "tab-footer";
+                case BOSS_BAR -> "boss-bar";
+                case NONE -> "none";
+            };
+        }
+
+        private static HudMode fromConfig(String value) {
+            if (value == null) return TAB_FOOTER;
+            return switch (value.trim().toLowerCase(Locale.ROOT)) {
+                case "boss-bar", "bossbar" -> BOSS_BAR;
+                case "none", "off", "disabled" -> NONE;
+                default -> TAB_FOOTER;
+            };
+        }
+    }
+
+    public enum NumberFormatMode {
+        GROUPED("grouped"),
+        COMPACT("compact");
+
+        private final String configValue;
+
+        NumberFormatMode(String configValue) { this.configValue = configValue; }
+        public String configValue() { return configValue; }
+        public String example() { return format(12_450); }
+        public String format(long value) {
+            if (this == GROUPED) return String.format(Locale.ROOT, "%,d", value);
+            double absolute = Math.abs((double) value);
+            if (absolute < 1_000) return Long.toString(value);
+            String suffix;
+            double divisor;
+            if (absolute >= 1_000_000_000) { suffix = "B"; divisor = 1_000_000_000d; }
+            else if (absolute >= 1_000_000) { suffix = "M"; divisor = 1_000_000d; }
+            else { suffix = "K"; divisor = 1_000d; }
+            double scaled = value / divisor;
+            return String.format(Locale.ROOT, scaled >= 100 ? "%.0f%s" : "%.1f%s", scaled, suffix);
+        }
+        private static NumberFormatMode fromConfig(String value) {
+            return "compact".equalsIgnoreCase(value) ? COMPACT : GROUPED;
+        }
+    }
+
+    public enum TradeRequestMode {
+        ALL("all", 0), RADIUS_50("radius-50", 50), RADIUS_100("radius-100", 100),
+        RADIUS_150("radius-150", 150), NONE("none", 0);
+
+        private final String configValue;
+        private final int radius;
+        TradeRequestMode(String configValue, int radius) { this.configValue = configValue; this.radius = radius; }
+        public String configValue() { return configValue; }
+        public int radius() { return radius; }
+        private static TradeRequestMode fromConfig(String value) {
+            if (value == null) return ALL;
+            return switch (value.toLowerCase(Locale.ROOT)) {
+                case "radius-50" -> RADIUS_50;
+                case "radius-100" -> RADIUS_100;
+                case "radius-150" -> RADIUS_150;
+                case "none" -> NONE;
+                default -> ALL;
+            };
+        }
     }
 
     public void refreshAllMarketGuis() {
