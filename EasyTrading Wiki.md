@@ -29,7 +29,7 @@ EasyTrading provides an in-game economy and several ways for players to exchange
 - Money transfers, team balances, transaction history, and a balance HUD.
 - Optional Vault economy support.
 
-The balance HUD is shown as a yellow boss bar and refreshes automatically. Players can hide it with `/market hide` and show it again with `/market show`.
+By default, the balance is displayed in the footer of the standard player list, so it is visible only while holding Tab. Players can hide it with `/market hide` and show it again with `/market show`.
 
 ## Installation
 
@@ -296,6 +296,9 @@ trade:
 market:
   block-creative-items: true
 
+hud:
+  mode: tab-footer
+
 updates:
   enabled: true
   notify-admins: true
@@ -303,6 +306,7 @@ updates:
 
 - `trade.block-creative-and-spectator` prevents Creative and Spectator players from using direct player trades.
 - `market.block-creative-items` marks items handled in Creative and blocks them from `/market sell` and `/market sellto`.
+- `hud.mode` controls the balance display: `tab-footer` (default), `boss-bar`, or `none`. The Tab footer can conflict with other plugins that write their own Tab footer.
 - `updates.enabled` checks Modrinth for a newer release after startup.
 - `updates.notify-admins` notifies administrators with `easytrading.admin` when they join and an update is available.
 

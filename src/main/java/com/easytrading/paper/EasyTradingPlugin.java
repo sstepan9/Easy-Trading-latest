@@ -182,12 +182,9 @@ public class EasyTradingPlugin extends JavaPlugin {
             Bukkit.getServicesManager().unregisterAll(this);
         }
 
-        // Remove all BossBars
+        // Remove every balance HUD element owned by this plugin.
         for (Player player : Bukkit.getOnlinePlayers()) {
-            BossBar bar = playerBossBars.remove(player.getUniqueId());
-            if (bar != null) {
-                hideBossBar(player, bar);
-            }
+            clearBalanceHud(player);
         }
         if (adventure != null) {
             adventure.disable();
@@ -210,6 +207,10 @@ public class EasyTradingPlugin extends JavaPlugin {
     private void ensureConfigurationDefaults() {
         FileConfiguration config = getConfig();
         boolean changed = false;
+        if (!config.isSet("hud.mode")) {
+            config.set("hud.mode", "tab-footer");
+            changed = true;
+        }
         if (!config.isSet("updates.enabled")) {
             config.set("updates.enabled", true);
             changed = true;
@@ -251,23 +252,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         bankConfig.ensureLoaded();
 
         UUID uuid = player.getUniqueId();
-        if (!hudHidden.contains(uuid)) {
-            long balance = economy.get(uuid);
-            Component name = trc("hud.balance", NamedTextColor.GOLD, balance);
-            BossBar bar = playerBossBars.get(uuid);
-            if (bar == null) {
-                bar = BossBar.bossBar(name, 1.0f, BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS);
-                playerBossBars.put(uuid, bar);
-                showBossBar(player, bar);
-            } else {
-                bar.name(name);
-            }
-        } else {
-            BossBar bar = playerBossBars.remove(uuid);
-            if (bar != null) {
-                hideBossBar(player, bar);
-            }
-        }
+        renderBalanceHud(player, hudHidden.contains(uuid));
 
         if (marketDeliveries.has(uuid)) {
             deliverQueuedItems(player);
@@ -283,6 +268,49 @@ public class EasyTradingPlugin extends JavaPlugin {
         PlatformScheduler.TaskHandle handle = playerHudTasks.remove(player.getUniqueId());
         if (handle != null) {
             handle.cancel();
+        }
+    }
+
+    private void renderBalanceHud(Player player, boolean hidden) {
+        HudMode mode = getHudMode();
+        if (hidden || mode == HudMode.NONE) {
+            clearBalanceHud(player);
+            return;
+        }
+
+        Component balance = trc("hud.balance", NamedTextColor.GOLD, economy.get(player.getUniqueId()));
+        if (mode == HudMode.TAB_FOOTER) {
+            removeBossBar(player);
+            // The footer is visible only while the player holds Tab. The
+            // header remains available for server-list plugins to manage.
+            player.setPlayerListFooter("\n" + AdventureSupport.legacy(balance) + "\n");
+            return;
+        }
+
+        player.setPlayerListFooter(null);
+        BossBar bar = playerBossBars.get(player.getUniqueId());
+        if (bar == null) {
+            bar = BossBar.bossBar(balance, 1.0f, BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS);
+            playerBossBars.put(player.getUniqueId(), bar);
+            showBossBar(player, bar);
+        } else {
+            bar.name(balance);
+        }
+    }
+
+    private HudMode getHudMode() {
+        return HudMode.fromConfig(getConfig().getString("hud.mode", "tab-footer"));
+    }
+
+    private void clearBalanceHud(Player player) {
+        player.setPlayerListFooter(null);
+        removeBossBar(player);
+    }
+
+    private void removeBossBar(Player player) {
+        BossBar bar = playerBossBars.remove(player.getUniqueId());
+        if (bar != null) {
+            hideBossBar(player, bar);
         }
     }
 
@@ -336,10 +364,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         openConfirmations.remove(uuid);
         tradeManager.handleDisconnect(player);
         stopPlayerHudTask(player);
-        BossBar bar = playerBossBars.remove(uuid);
-        if (bar != null) {
-            hideBossBar(player, bar);
-        }
+        clearBalanceHud(player);
     }
 
     // ── Balance Sync ──
@@ -723,12 +748,10 @@ public class EasyTradingPlugin extends JavaPlugin {
     public void setHudHidden(Player player, boolean hidden) {
         if (hidden) {
             hudHidden.add(player.getUniqueId());
-            BossBar bar = playerBossBars.remove(player.getUniqueId());
-            if (bar != null) {
-                hideBossBar(player, bar);
-            }
+            clearBalanceHud(player);
         } else {
             hudHidden.remove(player.getUniqueId());
+            renderBalanceHud(player, false);
         }
     }
 
@@ -758,6 +781,21 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public boolean isTradeSupported() {
         return !isFolia();
+    }
+
+    private enum HudMode {
+        TAB_FOOTER,
+        BOSS_BAR,
+        NONE;
+
+        private static HudMode fromConfig(String value) {
+            if (value == null) return TAB_FOOTER;
+            return switch (value.trim().toLowerCase(Locale.ROOT)) {
+                case "boss-bar", "bossbar" -> BOSS_BAR;
+                case "none", "off", "disabled" -> NONE;
+                default -> TAB_FOOTER;
+            };
+        }
     }
 
     public void refreshAllMarketGuis() {

@@ -9,6 +9,10 @@ market:
   # /market sellto. Disable only if your server intentionally allows this.
   block-creative-items: true
 
+hud:
+  # Balance display: tab-footer (only visible while holding Tab), boss-bar, or none.
+  mode: tab-footer
+
 updates:
   # Check Modrinth for a newer EasyTrading release after startup.
   enabled: true
