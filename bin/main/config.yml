@@ -8,3 +8,9 @@ market:
   # Mark items handled in Creative and reject them from /market sell and
   # /market sellto. Disable only if your server intentionally allows this.
   block-creative-items: true
+
+updates:
+  # Check Modrinth for a newer EasyTrading release after startup.
+  enabled: true
+  # Notify online administrators when they join while an update is available.
+  notify-admins: true

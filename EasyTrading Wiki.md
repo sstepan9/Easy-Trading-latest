@@ -1,6 +1,6 @@
 # EasyTrading Wiki
 
-**Valid for EasyTrading `1.21.x-11.26.02`.**
+**Valid for EasyTrading `1.21.x-11.26.03`.**
 
 ## Contents
 
@@ -295,10 +295,16 @@ trade:
 
 market:
   block-creative-items: true
+
+updates:
+  enabled: true
+  notify-admins: true
 ```
 
 - `trade.block-creative-and-spectator` prevents Creative and Spectator players from using direct player trades.
 - `market.block-creative-items` marks items handled in Creative and blocks them from `/market sell` and `/market sellto`.
+- `updates.enabled` checks Modrinth for a newer release after startup.
+- `updates.notify-admins` notifies administrators with `easytrading.admin` when they join and an update is available.
 
 Creative-origin tracking starts after the updated plugin is installed. Items created before the update cannot be reliably identified retroactively.
 

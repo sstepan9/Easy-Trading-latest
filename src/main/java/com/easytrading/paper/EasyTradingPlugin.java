@@ -9,17 +9,20 @@ import com.easytrading.paper.listener.PlayerListener;
 import com.easytrading.paper.locale.LocalizationManager;
 import com.easytrading.paper.platform.PlatformScheduler;
 import com.easytrading.paper.trade.TradeManager;
+import com.easytrading.paper.update.UpdateChecker;
 import com.easytrading.paper.util.AdventureSupport;
 import com.easytrading.paper.util.Items;
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.milkbowl.vault.economy.Economy;
+import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -69,6 +72,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     private AdventureSupport adventure;
     private PlatformScheduler scheduler;
     private LocalizationManager localization;
+    private volatile UpdateChecker.Release availableUpdate;
 
     private static final long PENDING_TIMEOUT_MS = 5 * 60 * 1000L;
     private static final Set<String> CANCEL_KEYWORDS = Set.of("cancel", "отмена", "отменить");
@@ -82,6 +86,8 @@ public class EasyTradingPlugin extends JavaPlugin {
     public void onEnable() {
         instance = this;
         saveDefaultConfig();
+        ensureConfigurationDefaults();
+        new Metrics(this, 35237);
         creativeOriginKey = new NamespacedKey(this, "creative-origin");
         Path dataFolder = getDataFolder().toPath();
         try {
@@ -109,6 +115,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         adventure.enable();
         scheduler = new PlatformScheduler(this);
         tradeManager = new TradeManager(this);
+        checkForUpdates();
 
         // Register commands
         MarketCommand cmd = new MarketCommand(this);
@@ -200,6 +207,41 @@ public class EasyTradingPlugin extends JavaPlugin {
         bankConfig.save();
     }
 
+    private void ensureConfigurationDefaults() {
+        FileConfiguration config = getConfig();
+        boolean changed = false;
+        if (!config.isSet("updates.enabled")) {
+            config.set("updates.enabled", true);
+            changed = true;
+        }
+        if (!config.isSet("updates.notify-admins")) {
+            config.set("updates.notify-admins", true);
+            changed = true;
+        }
+        if (changed) {
+            saveConfig();
+        }
+    }
+
+    private void checkForUpdates() {
+        if (!getConfig().getBoolean("updates.enabled", true)) {
+            return;
+        }
+        String installedVersion = getDescription().getVersion();
+        new UpdateChecker().findNewerRelease(installedVersion).whenComplete((result, failure) -> {
+            if (!isEnabled()) return;
+            if (failure != null) {
+                getLogger().fine("Could not check for EasyTrading updates: " + failure.getMessage());
+                return;
+            }
+            result.ifPresent(update -> {
+                availableUpdate = update;
+                getLogger().warning("A new EasyTrading version is available: " + update.version()
+                        + " (installed: " + installedVersion + "). Download: " + update.pageUrl());
+            });
+        });
+    }
+
     private void tickPlayerHud(Player player) {
         if (player == null || !player.isOnline()) {
             return;
@@ -258,6 +300,13 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public void onPlayerLogin(Player player) {
         syncBalance(player);
+
+        UpdateChecker.Release update = availableUpdate;
+        if (update != null && getConfig().getBoolean("updates.notify-admins", true)
+                && player.hasPermission("easytrading.admin")) {
+            sendMessage(player, trc("update.available", NamedTextColor.YELLOW,
+                    update.version(), getDescription().getVersion(), update.pageUrl()));
+        }
 
         // Load HUD preference
         // (hudHidden is ephemeral in Paper version; persisted separately if needed)
