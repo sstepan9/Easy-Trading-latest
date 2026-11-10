@@ -4,6 +4,7 @@ import com.easytrading.paper.EasyTradingPlugin;
 import com.easytrading.paper.gui.ConfirmationGui;
 import com.easytrading.paper.gui.MarketGui;
 import com.easytrading.paper.gui.PurchaseSetupGui;
+import com.easytrading.paper.gui.PlayerConfigGui;
 import com.easytrading.paper.trade.TradeManager;
 import com.easytrading.paper.trade.TradeSession;
 import org.bukkit.Bukkit;
@@ -102,6 +103,12 @@ public class PlayerListener implements Listener {
         PurchaseSetupGui purchaseSetupGui = plugin.getOpenPurchaseSetupGui(player);
         if (purchaseSetupGui != null && event.getInventory().equals(purchaseSetupGui.getInventory())) {
             purchaseSetupGui.handleClick(event);
+            return;
+        }
+
+        PlayerConfigGui playerConfigGui = plugin.getOpenPlayerConfigGui(player);
+        if (playerConfigGui != null && event.getInventory().equals(playerConfigGui.getInventory())) {
+            playerConfigGui.handleClick(event);
         }
     }
 
@@ -153,6 +160,11 @@ public class PlayerListener implements Listener {
         PurchaseSetupGui purchaseSetupGui = plugin.getOpenPurchaseSetupGui(player);
         if (purchaseSetupGui != null && event.getInventory().equals(purchaseSetupGui.getInventory())) {
             purchaseSetupGui.handleClose();
+        }
+
+        PlayerConfigGui playerConfigGui = plugin.getOpenPlayerConfigGui(player);
+        if (playerConfigGui != null && event.getInventory().equals(playerConfigGui.getInventory())) {
+            playerConfigGui.handleClose();
         }
 
         ConfirmationGui confirmGui = plugin.getOpenConfirmation(player);

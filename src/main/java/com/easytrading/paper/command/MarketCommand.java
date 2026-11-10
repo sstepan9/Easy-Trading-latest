@@ -38,7 +38,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             "command.help.6", "command.help.7", "command.help.8", "command.help.9", "command.help.10",
             "command.help.11", "command.help.12", "command.help.13", "command.help.14", "command.help.15",
             "command.help.16", "command.help.17", "command.help.18", "command.help.19", "command.help.20",
-            "command.help.21", "command.help.22", "command.help.23"
+            "command.help.21", "command.help.22", "command.help.23", "command.help.24"
     };
 
     public MarketCommand(EasyTradingPlugin plugin) {
@@ -78,6 +78,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             case "history" -> handleHistory(player);
             case "limits" -> handleLimits(player);
             case "balance" -> handleBalance(player);
+            case "config" -> handleConfig(player);
             case "trade" -> handleTrade(player, args);
             case "hide" -> handleHide(player, true);
             case "show" -> handleHide(player, false);
@@ -615,6 +616,11 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleConfig(Player player) {
+        plugin.openPlayerConfig(player);
+        return true;
+    }
+
     private boolean handleHide(Player player, boolean hide) {
         plugin.setHudHidden(player, hide);
         if (hide) {
@@ -912,7 +918,7 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             List<String> subs = new ArrayList<>(List.of(
                     "my", "seller", "search", "sell", "relist", "cancelall", "sellto", "buyfrom",
                     "pur", "purchase", "send", "trade", "team", "history",
-                    "limits", "balance", "hide", "show", "help"
+                    "limits", "balance", "config", "hide", "show", "help"
             ));
             if (sender.hasPermission("easytrading.admin")) {
                 subs.addAll(List.of("bankreload", "clearlimits", "change", "add", "take", "ads"));

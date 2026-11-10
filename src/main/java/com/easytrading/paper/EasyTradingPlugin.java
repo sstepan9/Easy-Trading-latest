@@ -5,6 +5,7 @@ import com.easytrading.paper.data.*;
 import com.easytrading.paper.gui.ConfirmationGui;
 import com.easytrading.paper.gui.MarketGui;
 import com.easytrading.paper.gui.PurchaseSetupGui;
+import com.easytrading.paper.gui.PlayerConfigGui;
 import com.easytrading.paper.listener.PlayerListener;
 import com.easytrading.paper.locale.LocalizationManager;
 import com.easytrading.paper.platform.PlatformScheduler;
@@ -53,6 +54,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     private TransactionHistoryData transactionHistory;
     private MarketNotifyData marketNotify;
     private MarketDeliveryData marketDeliveries;
+    private HudPreferencesData hudPreferences;
 
     private final Map<UUID, PendingSale> pendingSales = new ConcurrentHashMap<>();
     private final Map<UUID, PendingBankTrade> pendingBank = new ConcurrentHashMap<>();
@@ -63,6 +65,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     private final Map<UUID, MarketFilterPrompt> pendingMarketPrompts = new ConcurrentHashMap<>();
     private final Map<UUID, MarketGui> openMarketGuis = new ConcurrentHashMap<>();
     private final Map<UUID, PurchaseSetupGui> openPurchaseSetupGuis = new ConcurrentHashMap<>();
+    private final Map<UUID, PlayerConfigGui> openPlayerConfigGuis = new ConcurrentHashMap<>();
     private final Map<UUID, ConfirmationGui> openConfirmations = new ConcurrentHashMap<>();
     private final Set<UUID> hudHidden = ConcurrentHashMap.newKeySet();
     private final Map<UUID, BossBar> playerBossBars = new ConcurrentHashMap<>();
@@ -104,6 +107,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         transactionHistory = new TransactionHistoryData(dataFolder);
         marketNotify = new MarketNotifyData(dataFolder);
         marketDeliveries = new MarketDeliveryData(dataFolder);
+        hudPreferences = new HudPreferencesData(dataFolder);
 
         marketConfig.ensureLoaded();
         bankConfig.ensureLoaded();
@@ -202,6 +206,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         marketNotify.save();
         marketDeliveries.save();
         bankConfig.save();
+        hudPreferences.save();
     }
 
     private void ensureConfigurationDefaults() {
@@ -272,7 +277,7 @@ public class EasyTradingPlugin extends JavaPlugin {
     }
 
     private void renderBalanceHud(Player player, boolean hidden) {
-        HudMode mode = getHudMode();
+        HudMode mode = getPlayerHudMode(player);
         if (hidden || mode == HudMode.NONE) {
             clearBalanceHud(player);
             return;
@@ -298,8 +303,19 @@ public class EasyTradingPlugin extends JavaPlugin {
         }
     }
 
-    private HudMode getHudMode() {
+    public HudMode getPlayerHudMode(Player player) {
+        if (player != null && hudPreferences != null) {
+            Optional<String> saved = hudPreferences.getMode(player.getUniqueId());
+            if (saved.isPresent()) return HudMode.fromConfig(saved.get());
+        }
         return HudMode.fromConfig(getConfig().getString("hud.mode", "tab-footer"));
+    }
+
+    public void setPlayerHudMode(Player player, HudMode mode) {
+        if (player == null || mode == null || mode == HudMode.NONE) return;
+        hudPreferences.setMode(player.getUniqueId(), mode.configValue());
+        hudPreferences.save();
+        renderBalanceHud(player, hudHidden.contains(player.getUniqueId()));
     }
 
     private void clearBalanceHud(Player player) {
@@ -361,6 +377,7 @@ public class EasyTradingPlugin extends JavaPlugin {
         pendingMarketPrompts.remove(uuid);
         openMarketGuis.remove(uuid);
         openPurchaseSetupGuis.remove(uuid);
+        openPlayerConfigGuis.remove(uuid);
         openConfirmations.remove(uuid);
         tradeManager.handleDisconnect(player);
         stopPlayerHudTask(player);
@@ -401,6 +418,20 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public void registerPurchaseSetupGui(Player player, PurchaseSetupGui gui) {
         openPurchaseSetupGuis.put(player.getUniqueId(), gui);
+    }
+
+    public void openPlayerConfig(Player player) {
+        PlayerConfigGui gui = new PlayerConfigGui(this, player);
+        openPlayerConfigGuis.put(player.getUniqueId(), gui);
+        gui.open();
+    }
+
+    public PlayerConfigGui getOpenPlayerConfigGui(Player player) {
+        return openPlayerConfigGuis.get(player.getUniqueId());
+    }
+
+    public void removePlayerConfigGui(Player player) {
+        openPlayerConfigGuis.remove(player.getUniqueId());
     }
 
     public void openPurchaseSetup(Player player) {
@@ -783,10 +814,18 @@ public class EasyTradingPlugin extends JavaPlugin {
         return !isFolia();
     }
 
-    private enum HudMode {
+    public enum HudMode {
         TAB_FOOTER,
         BOSS_BAR,
         NONE;
+
+        public String configValue() {
+            return switch (this) {
+                case TAB_FOOTER -> "tab-footer";
+                case BOSS_BAR -> "boss-bar";
+                case NONE -> "none";
+            };
+        }
 
         private static HudMode fromConfig(String value) {
             if (value == null) return TAB_FOOTER;
