@@ -216,6 +216,14 @@ public class EasyTradingPlugin extends JavaPlugin {
             config.set("hud.mode", "tab-footer");
             changed = true;
         }
+        if (!config.isSet("hud.number-format")) {
+            config.set("hud.number-format", "grouped");
+            changed = true;
+        }
+        if (!config.isSet("trade.request-mode")) {
+            config.set("trade.request-mode", "all");
+            changed = true;
+        }
         if (!config.isSet("updates.enabled")) {
             config.set("updates.enabled", true);
             changed = true;
@@ -283,7 +291,8 @@ public class EasyTradingPlugin extends JavaPlugin {
             return;
         }
 
-        Component balance = trc("hud.balance", NamedTextColor.GOLD, economy.get(player.getUniqueId()));
+        Component balance = Component.text(tr("hud.balance", formatBalance(player, economy.get(player.getUniqueId()))))
+                .color(NamedTextColor.GOLD);
         if (mode == HudMode.TAB_FOOTER) {
             removeBossBar(player);
             // The footer is visible only while the player holds Tab. The
@@ -305,7 +314,7 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public HudMode getPlayerHudMode(Player player) {
         if (player != null && hudPreferences != null) {
-            Optional<String> saved = hudPreferences.getMode(player.getUniqueId());
+            Optional<String> saved = hudPreferences.getHudMode(player.getUniqueId());
             if (saved.isPresent()) return HudMode.fromConfig(saved.get());
         }
         return HudMode.fromConfig(getConfig().getString("hud.mode", "tab-footer"));
@@ -313,9 +322,51 @@ public class EasyTradingPlugin extends JavaPlugin {
 
     public void setPlayerHudMode(Player player, HudMode mode) {
         if (player == null || mode == null || mode == HudMode.NONE) return;
-        hudPreferences.setMode(player.getUniqueId(), mode.configValue());
+        hudPreferences.setHudMode(player.getUniqueId(), mode.configValue());
         hudPreferences.save();
         renderBalanceHud(player, hudHidden.contains(player.getUniqueId()));
+    }
+
+    public NumberFormatMode getPlayerNumberFormat(Player player) {
+        if (player != null && hudPreferences != null) {
+            Optional<String> saved = hudPreferences.getNumberFormat(player.getUniqueId());
+            if (saved.isPresent()) return NumberFormatMode.fromConfig(saved.get());
+        }
+        return NumberFormatMode.fromConfig(getConfig().getString("hud.number-format", "grouped"));
+    }
+
+    public void setPlayerNumberFormat(Player player, NumberFormatMode format) {
+        if (player == null || format == null) return;
+        hudPreferences.setNumberFormat(player.getUniqueId(), format.configValue());
+        hudPreferences.save();
+        renderBalanceHud(player, hudHidden.contains(player.getUniqueId()));
+    }
+
+    public String formatBalance(Player player, long value) {
+        return getPlayerNumberFormat(player).format(value);
+    }
+
+    public TradeRequestMode getTradeRequestMode(Player player) {
+        if (player != null && hudPreferences != null) {
+            Optional<String> saved = hudPreferences.getTradeRequestMode(player.getUniqueId());
+            if (saved.isPresent()) return TradeRequestMode.fromConfig(saved.get());
+        }
+        return TradeRequestMode.fromConfig(getConfig().getString("trade.request-mode", "all"));
+    }
+
+    public void setTradeRequestMode(Player player, TradeRequestMode mode) {
+        if (player == null || mode == null) return;
+        hudPreferences.setTradeRequestMode(player.getUniqueId(), mode.configValue());
+        hudPreferences.save();
+    }
+
+    public boolean canReceiveTradeRequest(Player target, Player sender) {
+        if (target == null || sender == null) return false;
+        TradeRequestMode mode = getTradeRequestMode(target);
+        if (mode == TradeRequestMode.NONE) return false;
+        if (mode == TradeRequestMode.ALL) return true;
+        if (!target.getWorld().equals(sender.getWorld())) return false;
+        return target.getLocation().distanceSquared(sender.getLocation()) <= (double) mode.radius() * mode.radius();
     }
 
     private void clearBalanceHud(Player player) {
@@ -833,6 +884,53 @@ public class EasyTradingPlugin extends JavaPlugin {
                 case "boss-bar", "bossbar" -> BOSS_BAR;
                 case "none", "off", "disabled" -> NONE;
                 default -> TAB_FOOTER;
+            };
+        }
+    }
+
+    public enum NumberFormatMode {
+        GROUPED("grouped"),
+        COMPACT("compact");
+
+        private final String configValue;
+
+        NumberFormatMode(String configValue) { this.configValue = configValue; }
+        public String configValue() { return configValue; }
+        public String example() { return format(12_450); }
+        public String format(long value) {
+            if (this == GROUPED) return String.format(Locale.ROOT, "%,d", value);
+            double absolute = Math.abs((double) value);
+            if (absolute < 1_000) return Long.toString(value);
+            String suffix;
+            double divisor;
+            if (absolute >= 1_000_000_000) { suffix = "B"; divisor = 1_000_000_000d; }
+            else if (absolute >= 1_000_000) { suffix = "M"; divisor = 1_000_000d; }
+            else { suffix = "K"; divisor = 1_000d; }
+            double scaled = value / divisor;
+            return String.format(Locale.ROOT, scaled >= 100 ? "%.0f%s" : "%.1f%s", scaled, suffix);
+        }
+        private static NumberFormatMode fromConfig(String value) {
+            return "compact".equalsIgnoreCase(value) ? COMPACT : GROUPED;
+        }
+    }
+
+    public enum TradeRequestMode {
+        ALL("all", 0), RADIUS_50("radius-50", 50), RADIUS_100("radius-100", 100),
+        RADIUS_150("radius-150", 150), NONE("none", 0);
+
+        private final String configValue;
+        private final int radius;
+        TradeRequestMode(String configValue, int radius) { this.configValue = configValue; this.radius = radius; }
+        public String configValue() { return configValue; }
+        public int radius() { return radius; }
+        private static TradeRequestMode fromConfig(String value) {
+            if (value == null) return ALL;
+            return switch (value.toLowerCase(Locale.ROOT)) {
+                case "radius-50" -> RADIUS_50;
+                case "radius-100" -> RADIUS_100;
+                case "radius-150" -> RADIUS_150;
+                case "none" -> NONE;
+                default -> ALL;
             };
         }
     }

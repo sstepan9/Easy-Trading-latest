@@ -612,7 +612,8 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleBalance(Player player) {
         long balance = plugin.getEconomy().get(player.getUniqueId());
-        plugin.sendMessage(player, plugin.trc("command.balance.self", NamedTextColor.GREEN, balance));
+        plugin.sendMessage(player, plugin.trc("command.balance.self", NamedTextColor.GREEN,
+                plugin.formatBalance(player, balance)));
         return true;
     }
 
@@ -829,7 +830,9 @@ public class MarketCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         long balance = plugin.getEconomy().get(target.getUniqueId());
-        plugin.sendMessage(sender, plugin.trc("command.balance.other", NamedTextColor.GREEN, target.getName(), balance));
+        Player viewer = sender instanceof Player player ? player : target;
+        plugin.sendMessage(sender, plugin.trc("command.balance.other", NamedTextColor.GREEN, target.getName(),
+                plugin.formatBalance(viewer, balance)));
         return true;
     }
 

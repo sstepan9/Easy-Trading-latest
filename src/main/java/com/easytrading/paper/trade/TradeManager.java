@@ -79,6 +79,10 @@ public class TradeManager {
             plugin.sendMessage(sender, plugin.trc("trade.error.target_restricted_gamemode", NamedTextColor.RED));
             return;
         }
+        if (!plugin.canReceiveTradeRequest(target, sender)) {
+            plugin.sendMessage(sender, plugin.trc("trade.error.requests_not_allowed", NamedTextColor.RED));
+            return;
+        }
         UUID senderUuid = sender.getUniqueId();
         UUID targetUuid = target.getUniqueId();
 

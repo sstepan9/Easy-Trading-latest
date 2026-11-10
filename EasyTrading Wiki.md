@@ -310,6 +310,8 @@ updates:
 - `market.block-creative-items` marks items handled in Creative and blocks them from `/market sell` and `/market sellto`.
 - `hud.mode` controls the balance display: `tab-footer` (default), `boss-bar`, or `none`. The Tab footer can conflict with other plugins that write their own Tab footer.
 - `/market config` opens personal settings. In the **Balance** tab, each player can choose **Top Line** (boss bar) or **Tab List** (Tab footer); the choice is saved in `hud-preferences.json`.
+- The **Balance** tab also offers full (`12,450`) and compact (`12.4K`) number formats for the player's balance display and balance commands.
+- In the **Trading** tab, players choose who can send them direct-trade requests: everyone, players within 50, 100, or 150 blocks in the same world, or nobody. The server-wide `trade.request-mode` is used until a player selects a preference.
 - `updates.enabled` checks Modrinth for a newer release after startup.
 - `updates.notify-admins` notifies administrators with `easytrading.admin` when they join and an update is available.
 
